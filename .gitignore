@@ -1,0 +1,39 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+
+# Output and generated files
+output/
+*.docx
+
+# Chrome profiles (contain personal session data)
+ChromeAgentWork/
+bot_test_profile/
+playwright_profile/
+test_prof/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+
+# GSD internal tooling
+.agent/
+.planning/
+
+# PDF workflow documents (potentially sensitive)
+*.pdf

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Odoo Ticket Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      padding: 36px;
+      width: 100%;
+      max-width: 680px;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #1a1a1a;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 28px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #444;
+      margin-bottom: 6px;
+      margin-top: 18px;
+    }
+    label span {
+      color: #999;
+      font-weight: 400;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-family: inherit;
+      color: #1a1a1a;
+      background: #fafafa;
+      resize: vertical;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus, textarea:focus {
+      outline: none;
+      border-color: #875bf7;
+      background: #fff;
+    }
+    button[type="submit"] {
+      margin-top: 24px;
+      width: 100%;
+      padding: 12px;
+      background: #875bf7;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button[type="submit"]:hover { background: #7346f5; }
+    button[type="submit"]:disabled {
+      background: #c4b5fd;
+      cursor: not-allowed;
+    }
+
+    /* Progress section */
+    #progress-section { display: none; }
+    .progress-header {
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 20px;
+      color: #444;
+    }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 14px;
+    }
+    .step:last-child { border-bottom: none; }
+    .step-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 1px;
+    }
+    .step-icon.waiting { background: #f0f0f0; color: #999; }
+    .step-icon.running { background: #ede9fe; color: #875bf7; }
+    .step-icon.done    { background: #d1fae5; color: #059669; }
+    .step-icon.error   { background: #fee2e2; color: #dc2626; }
+    .step-text { color: #444; line-height: 1.5; }
+    .step-text.running { color: #875bf7; }
+    .step-text.done    { color: #059669; }
+    .step-text.error   { color: #dc2626; }
+
+    /* ── HITL Approval Card & Thinking ───────────────────────────── */
+    #thinking-section {
+      display: none;
+      margin-top: 16px;
+      padding: 14px 16px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      color: #334155;
+      font-size: 13.5px;
+      line-height: 1.6;
+      font-style: italic;
+    }
+    #thinking-header {
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #thinking-header .spinner {
+      width: 10px; height: 10px; border-color: #64748b; border-top-color: transparent;
+    }
+    #thinking-content {
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    #approval-card {
+      display: none;
+      margin-top: 24px;
+      border: 2px solid #f59e0b;
+      border-radius: 10px;
+      background: #fffbeb;
+      overflow: hidden;
+    }
+    .approval-header {
+      background: #f59e0b;
+      color: #fff;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .approval-body { padding: 16px; }
+    .approval-body p {
+      font-size: 13px;
+      color: #92400e;
+      margin-bottom: 12px;
+      line-height: 1.6;
+    }
+    #script-preview {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-family: "Menlo", "Courier New", monospace;
+      font-size: 12.5px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 280px;
+      overflow-y: auto;
+      margin-bottom: 16px;
+    }
+    .approval-actions {
+      display: flex;
+      gap: 10px;
+    }
+    #approve-btn {
+      flex: 1;
+      padding: 10px;
+      background: #059669;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #approve-btn:hover { background: #047857; }
+    #approve-btn:disabled { background: #6ee7b7; cursor: not-allowed; }
+
+    #skip-btn {
+      flex: 1;
+      padding: 10px;
+      background: transparent;
+      color: #92400e;
+      border: 1px solid #f59e0b;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #skip-btn:hover { background: #fef3c7; }
+    #skip-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* ────────────────────────────────────────────────────────────── */
+
+    .download-box {
+      display: none;
+      margin-top: 24px;
+      padding: 16px 20px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+    }
+    .download-box p { font-size: 14px; color: #166534; margin-bottom: 12px; }
+    .download-btn {
+      display: inline-block;
+      padding: 10px 20px;
+      background: #059669;
+      color: #fff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .download-btn:hover { background: #047857; }
+
+    .new-ticket-btn {
+      display: none;
+      margin-top: 16px;
+      width: 100%;
+      padding: 10px;
+      background: transparent;
+      color: #875bf7;
+      border: 1px solid #875bf7;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .new-ticket-btn:hover { background: #f5f0ff; }
+
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #875bf7;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="card">
+
+  <h1>Odoo Ticket Agent</h1>
+  <p class="subtitle">Paste a support ticket and the tool will investigate, test, and generate a report automatically.</p>
+
+  <!-- FORM SECTION -->
+  <div id="form-section">
+    <form id="ticket-form">
+
+      <label for="ticket_text">Ticket description <span>*required</span></label>
+      <textarea id="ticket_text" name="ticket_text" rows="7"
+        placeholder="Paste the full ticket text here — include any error messages, steps the customer described, and their environment details."></textarea>
+
+      <label for="odoo_version">Odoo version <span>*required</span></label>
+      <input type="text" id="odoo_version" name="odoo_version"
+        placeholder="e.g. 17.0, 16.0, saas-17.2">
+
+      <label for="db_url">Duplicate database URL <span>*required</span></label>
+      <input type="text" id="db_url" name="db_url"
+        placeholder="e.g. https://customer-copy.odoo.com">
+
+      <label for="documentation">Additional documentation <span>optional</span></label>
+      <textarea id="documentation" name="documentation" rows="3"
+        placeholder="Paste any relevant documentation, internal notes, or KB articles."></textarea>
+
+      <button type="submit" id="submit-btn">Run Agent</button>
+    </form>
+  </div>
+
+  <!-- PROGRESS SECTION -->
+  <div id="progress-section">
+    <p class="progress-header">Agent is running — please keep this tab open.</p>
+
+    <div id="steps-container">
+      <!-- Steps injected by JS -->
+    </div>
+
+    <!-- ── Thinking Stream Card ──────────────────────────────── -->
+    <div id="thinking-section">
+      <div id="thinking-header">
+        <div class="spinner"></div> 🧠 AI is analyzing documentation...
+      </div>
+      <div id="thinking-content"></div>
+    </div>
+    <!-- ─────────────────────────────────────────────────────── -->
+
+    <!-- ── HITL Approval Card ────────────────────────────────── -->
+    <div id="approval-card">
+      <div class="approval-header">
+        ⚠️ AI Script Ready — Human Approval Required
+      </div>
+      <div class="approval-body">
+        <p>
+          <strong>Gemini 2.5 Pro</strong> (with Google Search Grounding) has generated a
+          Playwright script to investigate this ticket inside the customer's duplicate database.
+        </p>
+        <div style="background: #fef3c7; border-left: 3px solid #f59e0b; padding: 10px 14px; margin: 12px 0; font-size: 13px; color: #92400e;">
+          <strong>⚠️ This script will execute these actions:</strong><br>
+          • Navigate through Odoo UI pages<br>
+          • Click menus, buttons, and form fields<br>
+          • Potentially create/modify test records<br>
+          • <strong>Only approve if you trust these actions in the DUPLICATE database</strong>
+        </div>
+        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">Review the generated code below:</p>
+        <pre id="script-preview"></pre>
+        <div class="approval-actions">
+          <button id="approve-btn" onclick="sendApproval(true)">✅ Approve &amp; Run Script</button>
+          <button id="skip-btn" onclick="sendApproval(false)">⏭ Skip Script</button>
+        </div>
+      </div>
+    </div>
+    <!-- ─────────────────────────────────────────────────────── -->
+
+    <div class="download-box" id="download-box">
+      <p>Investigation complete. Your report is ready.</p>
+      <a href="#" class="download-btn" id="download-link">Download Word Report</a>
+    </div>
+
+    <button class="new-ticket-btn" id="new-ticket-btn" onclick="resetForm()">
+      Run another ticket
+    </button>
+  </div>
+
+</div>
+
+<script>
+  const STEP_LABELS = [
+    "",
+    "Analysing ticket with Groq (fast extraction)",
+    "Opening duplicate database",
+    "Investigating duplicate database",
+    "Runbot check / Synthesising with Gemini",
+    "Generating Word report",
+  ];
+
+  let currentJobId = null;
+
+  function renderSteps(activeStep, message, status) {
+    const container = document.getElementById("steps-container");
+    container.innerHTML = "";
+    for (let i = 1; i <= 5; i++) {
+      const step = document.createElement("div");
+      step.className = "step";
+
+      const icon = document.createElement("div");
+      icon.className = "step-icon";
+
+      const text = document.createElement("div");
+      text.className = "step-text";
+
+      if (activeStep === 0) {
+        // Global error state, make all icons grey but show error at the top
+        const errBox = document.createElement("div");
+        errBox.className = "step";
+        errBox.innerHTML = `<div class="step-icon error">✕</div><div class="step-text error">${message}</div>`;
+        container.appendChild(errBox);
+        return; // Don't render the 1-5 steps
+      }
+
+      if (i < activeStep) {
+        icon.classList.add("done");
+        icon.textContent = "✓";
+        text.classList.add("done");
+        text.textContent = STEP_LABELS[i];
+      } else if (i === activeStep) {
+        if (status === "error") {
+          icon.classList.add("error");
+          icon.textContent = "✕";
+          text.classList.add("error");
+          text.textContent = message;
+        } else if (status === "done") {
+          icon.classList.add("done");
+          icon.textContent = "✓";
+          text.classList.add("done");
+          text.textContent = STEP_LABELS[i];
+        } else {
+          icon.classList.add("running");
+          icon.innerHTML = '<div class="spinner"></div>';
+          text.classList.add("running");
+          text.textContent = message;
+        }
+      } else {
+        icon.classList.add("waiting");
+        icon.textContent = i;
+        text.style.color = "#bbb";
+        text.textContent = STEP_LABELS[i];
+      }
+
+      step.appendChild(icon);
+      step.appendChild(text);
+      container.appendChild(step);
+    }
+  }
+
+  // ── HITL Approval Logic ────────────────────────────────────────────────
+  function showApprovalCard(scriptCode) {
+    document.getElementById("script-preview").textContent = scriptCode;
+    document.getElementById("approval-card").style.display = "block";
+    document.getElementById("approve-btn").disabled = false;
+    document.getElementById("skip-btn").disabled = false;
+    // Scroll to it
+    document.getElementById("approval-card").scrollIntoView({ behavior: "smooth" });
+  }
+
+  function hideApprovalCard() {
+    document.getElementById("approval-card").style.display = "none";
+  }
+
+  async function sendApproval(approved) {
+    if (!currentJobId) return;
+
+    // Disable buttons immediately to prevent double-click
+    document.getElementById("approve-btn").disabled = true;
+    document.getElementById("skip-btn").disabled = true;
+
+    await fetch(`/approve/${currentJobId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    });
+
+    hideApprovalCard();
+
+    if (approved) {
+      renderSteps(3, "Executing AI-generated script in customer database...", "running");
+    } else {
+      renderSteps(3, "Script skipped — continuing investigation...", "running");
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────
+
+  document.getElementById("ticket-form").addEventListener("submit", async function(e) {
+    e.preventDefault();
+
+    const btn = document.getElementById("submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Starting...";
+
+    const formData = new FormData(this);
+
+    // Basic validation
+    if (!formData.get("ticket_text").trim()) {
+      alert("Please enter the ticket description.");
+      btn.disabled = false;
+      btn.textContent = "Run Agent";
+      return;
+    }
+    if (!formData.get("db_url").trim()) {
+      alert("Please enter the duplicate database URL.");
+      btn.disabled = false;
+      btn.textContent = "Run Agent";
+      return;
+    }
+
+    // Submit job
+    const res = await fetch("/run", { method: "POST", body: formData });
+    const { job_id } = await res.json();
+    currentJobId = job_id;
+
+    // Switch to progress view
+    document.getElementById("form-section").style.display = "none";
+    document.getElementById("progress-section").style.display = "block";
+    document.getElementById('approval-card').style.display = 'none';
+    document.getElementById('thinking-section').style.display = 'none';
+    document.getElementById('thinking-content').textContent = '';
+    document.getElementById('download-box').style.display = 'none';
+    renderSteps(1, "Starting...", "running");
+
+    // Open SSE stream
+    const evtSource = new EventSource(`/stream/${job_id}`);
+
+    evtSource.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+      const step = data.step;
+      const msg = data.message;
+
+      // ── Handle approval_required event ──
+      if (data.event_type === "approval_required") {
+        renderSteps(data.step, data.message, "running");
+        showApprovalCard(data.script_code);
+        document.getElementById('thinking-header').innerHTML = '🧠 AI finished analyzing documentation.';
+        return;
+      }
+
+      // ── Handle thinking_stream event ──
+      if (data.event_type === "thinking_stream") {
+        const thinkingSection = document.getElementById('thinking-section');
+        if (thinkingSection.style.display === 'none' || thinkingSection.style.display === '') {
+          thinkingSection.style.display = 'block';
+        }
+        const contentBox = document.getElementById('thinking-content');
+        contentBox.textContent += data.script_code;
+        contentBox.scrollTop = contentBox.scrollHeight;
+        return;
+      }
+
+      if (data.done && !msg.startsWith("ERROR")) {
+        renderSteps(6, msg, "done");
+        evtSource.close();
+
+        if (data.report_path) {
+          const dlBox = document.getElementById("download-box");
+          const dlLink = document.getElementById("download-link");
+          dlLink.href = `/download?path=${encodeURIComponent(data.report_path)}`;
+          dlBox.style.display = "block";
+        }
+        document.getElementById("new-ticket-btn").style.display = "block";
+
+      } else if (msg.startsWith("ERROR")) {
+        renderSteps(step, msg, "error");
+        evtSource.close();
+        document.getElementById("new-ticket-btn").style.display = "block";
+      } else {
+        renderSteps(step, msg, "running");
+      }
+    };
+
+    evtSource.onerror = function() {
+      renderSteps(0, "Connection lost. Please refresh and try again.", "error");
+      evtSource.close();
+    };
+  });
+
+  function resetForm() {
+    currentJobId = null;
+    document.getElementById("form-section").style.display = "block";
+    document.getElementById("progress-section").style.display = "none";
+    document.getElementById("download-box").style.display = "none";
+    document.getElementById("approval-card").style.display = "none";
+    document.getElementById("new-ticket-btn").style.display = "none";
+    document.getElementById("submit-btn").disabled = false;
+    document.getElementById("submit-btn").textContent = "Run Agent";
+    document.getElementById("steps-container").innerHTML = "";
+  }
+</script>
+</body>
+</html>
