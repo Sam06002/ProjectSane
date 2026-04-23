@@ -6,9 +6,12 @@ Version 1.5 | Status: Active Development
 
 ## Overview
 
+![Project Sane v1.5 — High-Level Operational Workflow](workflow_diagram.png)
+
 Project Sane is an internal automation system built to eliminate repetitive manual work from the Odoo customer support workflow. A support analyst pastes a raw customer ticket into the web interface. The system then autonomously reads the ticket, opens the customer's duplicate database in a controlled browser session, navigates the Odoo UI, captures visual evidence, queries official documentation in real time, and produces a structured resolution report in Microsoft Word format — all without the analyst touching the browser.
 
 The system is designed to run locally on macOS and integrates with the analyst's existing Chrome profile so that existing Odoo sessions are preserved and reused across ticket runs.
+
 
 ---
 
