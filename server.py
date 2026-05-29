@@ -483,47 +483,73 @@ async def run_pipeline(request: Request):
                         except Exception:
                             pass  # No confirmation dialog — that's fine
                         
-                        yield StreamManager.emit_thinking(0, "Gateway", "Waiting for database duplication to complete (polling up to 180s)...")
+                        # ── Fast-path: Odoo may navigate directly to the duplicate right after the click ──
+                        # Give it a few seconds to navigate, then check if we've already landed on the duplicate.
                         found_dup = False
                         import time as _time
-                        poll_start = _time.time()
                         
-                        for poll_attempt in range(36):  # 36 × 5s = 180s (3 minutes)
-                            elapsed = int(_time.time() - poll_start)
-                            await asyncio.sleep(5)
+                        try:
+                            await page.wait_for_load_state("load", timeout=8000)
+                        except Exception:
+                            pass
+                        
+                        prod_sub = prod_base_url.split("//")[-1].split(".")[0]
+                        current_sub = page.url.split("//")[-1].split(".")[0] if "//" in page.url else ""
+                        if current_sub.startswith(f"{prod_sub}-") and current_sub != prod_sub:
+                            # Browser already landed on the duplicate — no polling needed
+                            duplicate_chosen = page.url
+                            yield StreamManager.emit_thinking(
+                                0, "Gateway",
+                                f"Duplicate database ready immediately — browser already at: {page.url}. Skipping poll."
+                            )
+                            found_dup = True
+                        
+                        if not found_dup:
+                            # ── Polling: navigate back to the support gateway each time ──
+                            # We must go back to target_nav_url before scanning; reloading the
+                            # current page is wrong when Odoo has already navigated us to the
+                            # duplicate's /web/login page.
+                            yield StreamManager.emit_thinking(0, "Gateway", "Waiting for database duplication to complete (polling up to 180s)...")
+                            poll_start = _time.time()
                             
-                            yield StreamManager.emit_thinking(0, "Gateway", f"Polling attempt {poll_attempt + 1}/36 ({elapsed}s elapsed)...")
-                            
-                            try:
-                                await page.reload()
-                                await page.wait_for_load_state("load", timeout=8000)
-                            except Exception:
-                                pass
-                            
-                            # Re-handle support login if the reload triggers it again
-                            async for msg in handle_support_login(page):
-                                yield msg
-                            
-                            # Scan for the new duplicate
-                            dup_link, match_strategy = await find_duplicate_link()
-                            if dup_link:
-                                duplicate_chosen = await dup_link.get_attribute("href")
-                                yield StreamManager.emit_thinking(0, "Gateway", f"Duplicate database created via {match_strategy}: {duplicate_chosen} (after {elapsed}s). Clicking to enter...")
-                                await dup_link.click()
+                            for poll_attempt in range(36):  # 36 × 5s = 180s (3 minutes)
+                                elapsed = int(_time.time() - poll_start)
+                                await asyncio.sleep(5)
+                                
+                                yield StreamManager.emit_thinking(0, "Gateway", f"Polling attempt {poll_attempt + 1}/36 ({elapsed}s elapsed)...")
+                                
+                                # Always navigate back to the support gateway before scanning.
+                                # Do NOT reload the current page — it may be the duplicate's login page.
                                 try:
-                                    await page.wait_for_load_state("load", timeout=15000)
+                                    await page.goto(target_nav_url, timeout=15000)
+                                    await page.wait_for_load_state("load", timeout=8000)
                                 except Exception:
                                     pass
-                                found_dup = True
-                                break
-                            
-                            # Check for progress/status indicators
-                            try:
-                                progress_texts = await page.inner_text("body")
-                                if any(kw in progress_texts.lower() for kw in ["duplicating", "copying", "in progress", "creating", "please wait"]):
-                                    yield StreamManager.emit_thinking(0, "Gateway", f"Duplication still in progress ({elapsed}s)... continuing to poll.")
-                            except Exception:
-                                pass
+                                
+                                # Re-handle support login if the gateway requires it again
+                                async for msg in handle_support_login(page):
+                                    yield msg
+                                
+                                # Scan for the new duplicate
+                                dup_link, match_strategy = await find_duplicate_link()
+                                if dup_link:
+                                    duplicate_chosen = await dup_link.get_attribute("href")
+                                    yield StreamManager.emit_thinking(0, "Gateway", f"Duplicate database ready via {match_strategy}: {duplicate_chosen} (after {elapsed}s). Entering...")
+                                    await dup_link.click()
+                                    try:
+                                        await page.wait_for_load_state("load", timeout=15000)
+                                    except Exception:
+                                        pass
+                                    found_dup = True
+                                    break
+                                
+                                # Check for progress/status indicators
+                                try:
+                                    progress_texts = await page.inner_text("body")
+                                    if any(kw in progress_texts.lower() for kw in ["duplicating", "copying", "in progress", "creating", "please wait"]):
+                                        yield StreamManager.emit_thinking(0, "Gateway", f"Duplication still in progress ({elapsed}s)... continuing to poll.")
+                                except Exception:
+                                    pass
                         
                         if not found_dup:
                             # Final diagnostic screenshot before failing
