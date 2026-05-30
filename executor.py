@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # EXPANDED: covers all common targets the LLM generates to prevent text-fallback timeouts.
 SELECTOR_REGISTRY = {
     # ── Top-level menu / navigation ──────────────────────────────────────
+    "Companies": ".dropdown-item:has-text('Companies'), a:has-text('Manage Companies'), .dropdown-menu a[data-menu-xmlid*='company']",
+    "companies": ".dropdown-item:has-text('Companies'), a:has-text('Manage Companies'), .dropdown-menu a[data-menu-xmlid*='company']",
+    "Your Company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('Your Company')",
+    "your company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('Your Company')",
     "settings": "a:has-text('Settings'), a[data-menu-xmlid='base.menu_administration']",
     "apps": "a:has-text('Apps'), a[data-menu-xmlid='base.menu_management']",
     "modules": "a:has-text('Modules')",
