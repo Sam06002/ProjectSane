@@ -55,15 +55,39 @@ SELECTOR_REGISTRY = {
     "Warning banner": ".o_notification_content, .o_notification_body, .o_notification, .alert",
     "Error message": ".o_notification_content, .o_notification_body, .o_error_dialog, .alert-danger",
 
-    # ── Search / filter ──────────────────────────────────────────────────
+    # ── Search / filter ──────────────────────────────────────────────
+    # List-view search bar
     "search_bar": ".o_searchview_input",
     "Search bar": ".o_searchview_input",
     "search bar": ".o_searchview_input",
+    # Settings page search bar — uses placeholder='Search...' not .o_searchview_input
+    "Search...": "input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search']",
+    "search...": "input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search']",
+    "Settings search": "input[placeholder='Search...'], .o_setting_search input",
+    "settings search": "input[placeholder='Search...'], .o_setting_search input",
+    "Search settings": "input[placeholder='Search...'], .o_setting_search input",
+    "search settings": "input[placeholder='Search...'], .o_setting_search input",
+    # Filter chips / clear search
+    "Clear search filter": ".o_searchview_facet .o_delete, .o_cp_searchview .o_facet_remove",
+    "clear search filter": ".o_searchview_facet .o_delete, .o_cp_searchview .o_facet_remove",
 
     # ── List view ────────────────────────────────────────────────────────
     "list_first_row": ".o_list_view .o_data_row:first-child",
     "First row": ".o_list_view .o_data_row:first-child",
     "first row": ".o_list_view .o_data_row:first-child",
+
+    # ── Settings page fields ─────────────────────────────────────────
+    # Common targets the LLM extracts from /odoo/settings
+    "Fiscal Localization field value": ".o_field_widget[name='chart_template_id'], div[name='chart_template_id'], .o_setting_box:has-text('Fiscal Localization')",
+    "fiscal localization field value": ".o_field_widget[name='chart_template_id'], div[name='chart_template_id']",
+    "Fiscal Localization": ".o_field_widget[name='chart_template_id'], div[name='chart_template_id'], .o_setting_box:has-text('Fiscal Localization')",
+    "fiscal localization": ".o_field_widget[name='chart_template_id'], div[name='chart_template_id']",
+    "Localization": ".o_setting_box:has-text('Localization'), .o_setting_box:has-text('Fiscal')",
+    "localization": ".o_setting_box:has-text('Localization'), .o_setting_box:has-text('Fiscal')",
+    "Company currency": ".o_field_widget[name='currency_id'], div[name='currency_id']",
+    "company currency": ".o_field_widget[name='currency_id'], div[name='currency_id']",
+    "Default company": ".o_field_widget[name='company_id'], div[name='company_id']",
+    "Company name": ".o_field_widget[name='name'] input, div[name='name'] input",
 
     # ── Chatter / messaging ──────────────────────────────────────────────
     "Log note": "button:has-text('Log note'), .o_chatter_button_log_note",
@@ -387,6 +411,26 @@ class ExecutionEngine:
                 await first_loc.wait_for(state="visible", timeout=5000)
                 await self._animate_cursor_to_element(first_loc)
                 await first_loc.fill(action.value)
+                
+                # Press Enter after filling search inputs — Odoo search bars need a
+                # Return keystroke to actually filter results (fill() alone is not enough).
+                _search_targets = {
+                    "search", "search bar", "search_bar", "search...", "search settings",
+                    "settings search", "search settings",
+                }
+                if (
+                    action.target.lower().strip() in _search_targets
+                    or "search" in action.target.lower()
+                    or "Search..." in action.target
+                    or (selector_used and "searchview" in (selector_used or "").lower())
+                    or (selector_used and "placeholder='Search" in (selector_used or ""))
+                ):
+                    await first_loc.press("Enter")
+                    try:
+                        await self.page.wait_for_load_state("load", timeout=3000)
+                    except Exception:
+                        pass
+                
                 return (
                     ExecutionResult(step_id=step_id, success=True, message=f"Input '{action.value}' into {action.target}"),
                     elements_found,
