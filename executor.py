@@ -179,6 +179,10 @@ ODOO_MODULE_ROUTES = {
     "Project": "/odoo/project",
     "employees": "/odoo/employees",
     "Employees": "/odoo/employees",
+    "companies": "/odoo/companies",
+    "Companies": "/odoo/companies",
+    "users": "/odoo/users",
+    "Users": "/odoo/users",
     "settings": "/odoo/settings",
     "Settings": "/odoo/settings",
     "apps": "/odoo/action-base.open_module_tree",
@@ -471,6 +475,33 @@ class ExecutionEngine:
                 # Graceful early-exit: if 0 elements found, fail fast
                 # instead of waiting 5s for the visibility timeout.
                 if elements_found == 0:
+                    # Route fallback: if the LLM tried to click a module name (e.g. "Companies") 
+                    # but skipped opening the menu, we can recover by navigating directly.
+                    route = None
+                    for k, v in ODOO_MODULE_ROUTES.items():
+                        if k.lower() == action.target.lower().strip():
+                            route = v
+                            break
+                    
+                    if route:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(self.page.url)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}"
+                        await self.page.goto(f"{base_url}{route}")
+                        try:
+                            await self.page.wait_for_load_state("load", timeout=5000)
+                        except Exception:
+                            pass
+                        return (
+                            ExecutionResult(
+                                step_id=step_id, 
+                                success=True, 
+                                message=f"Element '{action.target}' not found to click, but recovered by navigating to route '{route}'"
+                            ),
+                            0,
+                            f"ODOO_MODULE_ROUTES['{action.target}'] → {route} (click route recovery)",
+                        )
+
                     return (
                         ExecutionResult(
                             step_id=step_id,
