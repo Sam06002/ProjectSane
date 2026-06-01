@@ -65,8 +65,8 @@ SELECTOR_REGISTRY = {
     "Search bar": ".o_searchview_input",
     "search bar": ".o_searchview_input",
     # Settings page search bar — uses placeholder='Search...' not .o_searchview_input
-    "Search...": "input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search']",
-    "search...": "input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search']",
+    "Search...": ".o_searchview_input, input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search'], .o_cp_searchview input",
+    "search...": ".o_searchview_input, input[placeholder='Search...'], .o_searchview .o_searchview_input, .o_setting_search input, input[type='search'], .o_cp_searchview input",
     "Settings search": "input[placeholder='Search...'], .o_setting_search input",
     "settings search": "input[placeholder='Search...'], .o_setting_search input",
     "Search settings": "input[placeholder='Search...'], .o_setting_search input",
@@ -183,6 +183,12 @@ ODOO_MODULE_ROUTES = {
     "Discuss": "/odoo/discuss",
     "calendar": "/odoo/calendar",
     "Calendar": "/odoo/calendar",
+    # Website sub-pages — backend action routes
+    "Website Pages": "/odoo/action-website.action_website_pages_list",
+    "website pages": "/odoo/action-website.action_website_pages_list",
+    "Website pages": "/odoo/action-website.action_website_pages_list",
+    "Pages": "/odoo/action-website.action_website_pages_list",
+    "pages": "/odoo/action-website.action_website_pages_list",
 }
 
 class ExecutionEngine:
@@ -321,7 +327,48 @@ class ExecutionEngine:
                     from urllib.parse import urlparse
                     parsed = urlparse(self.page.url)
                     base_url = f"{parsed.scheme}://{parsed.netloc}"
-                    await self.page.goto(f"{base_url}{action.target}")
+                    target_url = f"{base_url}{action.target}"
+                    await self.page.goto(target_url)
+                    # ── Redirect detection: if Odoo silently redirected us
+                    # to a completely different path (e.g. /odoo/website → /),
+                    # report the mismatch so the pipeline doesn't silently
+                    # continue on the wrong page.
+                    try:
+                        await self.page.wait_for_load_state("load", timeout=5000)
+                    except Exception:
+                        pass
+                    final_path = urlparse(self.page.url).path.rstrip("/") or "/"
+                    intended_path = action.target.rstrip("/") or "/"
+                    if final_path != intended_path and not final_path.startswith(intended_path):
+                        # Check if we have a route in ODOO_MODULE_ROUTES for a
+                        # path suffix that matches (e.g. /odoo/website/pages)
+                        path_parts = action.target.strip("/").split("/")
+                        route_key = "/".join(path_parts[-2:]) if len(path_parts) >= 2 else path_parts[-1]
+                        for rk, rv in ODOO_MODULE_ROUTES.items():
+                            if rk.lower() == route_key.lower() or rk.lower().replace(" ", "") == route_key.lower().replace("/", ""):
+                                # Found a matching module route — redirect there
+                                redirect_url = f"{base_url}{rv}"
+                                selector_used = f"ODOO_MODULE_ROUTES['{rk}'] → {rv} (redirect recovery)"
+                                await self.page.goto(redirect_url)
+                                try:
+                                    await self.page.wait_for_load_state("load", timeout=5000)
+                                except Exception:
+                                    pass
+                                return (
+                                    ExecutionResult(step_id=step_id, success=True, message=f"Navigated to {action.target} (recovered via route '{rk}')"),
+                                    elements_found,
+                                    selector_used,
+                                )
+                        # No route recovery found — report the redirect as a warning
+                        return (
+                            ExecutionResult(
+                                step_id=step_id,
+                                success=True,
+                                message=f"Navigated to {action.target} but Odoo redirected to {self.page.url} (path mismatch: expected '{intended_path}', got '{final_path}')"
+                            ),
+                            elements_found,
+                            selector_used,
+                        )
                 elif action.target in ODOO_MODULE_ROUTES or action.target.lower() in {k.lower() for k in ODOO_MODULE_ROUTES}:
                     # Module name → resolve to URL path (prevents text-click timeout)
                     route = ODOO_MODULE_ROUTES.get(action.target)
@@ -414,6 +461,20 @@ class ExecutionEngine:
                     elements_found = await locator.count()
                 except Exception:
                     pass
+
+                # Graceful early-exit: if 0 elements found, fail fast
+                # instead of waiting 5s for the visibility timeout.
+                if elements_found == 0:
+                    return (
+                        ExecutionResult(
+                            step_id=step_id,
+                            success=False,
+                            message=f"Cannot click '{action.target}': element not found on current page ({self.page.url})"
+                        ),
+                        0,
+                        selector_used,
+                    )
+
                 # Use .first to avoid strict-mode violations when selector matches multiple elements
                 first_loc = locator.first
                 await first_loc.wait_for(state="visible", timeout=5000)
@@ -432,6 +493,20 @@ class ExecutionEngine:
                     elements_found = await locator.count()
                 except Exception:
                     pass
+
+                # Graceful early-exit: if 0 elements found, fail fast
+                # instead of waiting 5s for the visibility timeout.
+                if elements_found == 0:
+                    return (
+                        ExecutionResult(
+                            step_id=step_id,
+                            success=False,
+                            message=f"Cannot input into '{action.target}': field not found on current page ({self.page.url})"
+                        ),
+                        0,
+                        selector_used,
+                    )
+
                 # Use .first to avoid strict-mode violations when selector matches multiple elements
                 first_loc = locator.first
                 await first_loc.wait_for(state="visible", timeout=5000)
