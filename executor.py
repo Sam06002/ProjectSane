@@ -25,6 +25,8 @@ SELECTOR_REGISTRY = {
     "companies": ".dropdown-item:has-text('Companies'), a:has-text('Manage Companies'), .dropdown-menu a[data-menu-xmlid*='company']",
     "Your Company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('Your Company')",
     "your company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('Your Company')",
+    "My Company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('My Company')",
+    "my company": ".o_list_view .o_data_row:first-child, tr.o_data_row:first-child, .o_setting_box:has-text('Companies') a:has-text('Update Info'), a:has-text('My Company')",
     "settings": "a:has-text('Settings'), a[data-menu-xmlid='base.menu_administration']",
     "apps": "a:has-text('Apps'), a[data-menu-xmlid='base.menu_management']",
     "modules": "a:has-text('Modules')",
