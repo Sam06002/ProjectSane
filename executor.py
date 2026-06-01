@@ -93,6 +93,28 @@ SELECTOR_REGISTRY = {
     "Default company": ".o_field_widget[name='company_id'], div[name='company_id']",
     "Company name": ".o_field_widget[name='name'] input, div[name='name'] input",
 
+    # ── Website frontend elements ────────────────────────────────────────
+    # Website navigation / header — covers both the builder view and raw frontend
+    "Main navigation menu items": "header nav, header .navbar-nav, #top_menu, header .top_menu, nav.navbar, #wrapwrap header nav, header",
+    "main navigation menu items": "header nav, header .navbar-nav, #top_menu, header .top_menu, nav.navbar, #wrapwrap header nav, header",
+    "Navigation menu": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    "navigation menu": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    "Website menu": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    "website menu": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    "Menu items": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    "menu items": "header nav, header .navbar-nav, #top_menu, nav.navbar, header",
+    # Publication status (Website Pages list view)
+    "Publication status": ".o_list_view .o_data_row .o_field_widget[name='website_published'], .badge:has-text('Published'), .badge:has-text('Unpublished'), .o_list_view .o_data_row td:last-child",
+    "publication status": ".o_list_view .o_data_row .o_field_widget[name='website_published'], .badge:has-text('Published'), .badge:has-text('Unpublished'), .o_list_view .o_data_row td:last-child",
+    "Publication status of 'Service' page": ".o_list_view .o_data_row:has-text('Service') .o_field_widget[name='website_published'], .o_list_view .o_data_row:has-text('Service'), .o_list_view .o_data_row:first-child",
+    "Published": ".badge:has-text('Published'), .o_field_widget[name='website_published']",
+    "Unpublished": ".badge:has-text('Unpublished'), .o_field_widget[name='website_published']",
+    # Website page list
+    "Website pages": ".o_list_view .o_data_row, .o_list_view",
+    "website pages": ".o_list_view .o_data_row, .o_list_view",
+    "Page list": ".o_list_view .o_data_row, .o_list_view",
+    "page list": ".o_list_view .o_data_row, .o_list_view",
+
     # ── Chatter / messaging ──────────────────────────────────────────────
     "Log note": "button:has-text('Log note'), .o_chatter_button_log_note",
     "Send message": "button:has-text('Send message'), .o_chatter_button_new_message",
@@ -448,6 +470,33 @@ class ExecutionEngine:
                     elements_found = await locator.count()
                 except Exception:
                     pass
+
+                # ── Graceful fallback: if zero elements found, extract page
+                # title + visible body text snippet instead of timing out.
+                if elements_found == 0:
+                    page_title = await self.page.title()
+                    # Grab a truncated snapshot of visible text on the page
+                    try:
+                        body_text = await self.page.locator("body").first.inner_text()
+                        body_snippet = body_text[:800].strip()
+                    except Exception:
+                        body_snippet = "(could not extract body text)"
+                    fallback_text = (
+                        f"[Target '{action.target}' not found on page. "
+                        f"Page title: '{page_title}'. "
+                        f"Visible content snippet: {body_snippet}]"
+                    )
+                    return (
+                        ExecutionResult(
+                            step_id=step_id,
+                            success=True,
+                            message=f"Target '{action.target}' not found — extracted page snapshot instead",
+                            extracted_text=fallback_text,
+                        ),
+                        0,
+                        selector_used,
+                    )
+
                 # Use .first to avoid strict-mode violations when selector matches multiple elements
                 first_loc = locator.first
                 await first_loc.wait_for(state="visible", timeout=5000)
