@@ -71,6 +71,8 @@ SELECTOR_REGISTRY = {
     "settings search": "input[placeholder='Search...'], .o_setting_search input",
     "Search settings": "input[placeholder='Search...'], .o_setting_search input",
     "search settings": "input[placeholder='Search...'], .o_setting_search input",
+    "Search settings...": "input[placeholder='Search...'], .o_setting_search input",
+    "search settings...": "input[placeholder='Search...'], .o_setting_search input",
     # Filter chips / clear search
     "Clear search filter": ".o_searchview_facet .o_delete, .o_cp_searchview .o_facet_remove",
     "clear search filter": ".o_searchview_facet .o_delete, .o_cp_searchview .o_facet_remove",
@@ -294,8 +296,10 @@ class ExecutionEngine:
         
         # Case-insensitive fallback through registry
         target_lower = target.lower().strip()
+        target_no_dots = target_lower.rstrip(".")
         for key, selector in SELECTOR_REGISTRY.items():
-            if key.lower() == target_lower:
+            key_lower = key.lower()
+            if key_lower == target_lower or key_lower.rstrip(".") == target_no_dots:
                 return self.page.locator(selector)
         
         # Last resort: Treat as plain text search with multiple strategies
