@@ -1,213 +1,366 @@
-import requests
+"""
+ai_agent.py — Dual Cloud Engine for Project Sane v3.
+
+Engine 1 ── Groq Triage          (llama-3.1-8b-instant)
+    Fast JSON metadata extraction from raw support tickets.
+    Synchronous streaming generator, ~200-400ms latency.
+
+Engine 2 ── Gemini AI Studio      (gemini-2.5-flash)
+    Multimodal visual conductor. Receives base64 screenshots +
+    Groq's JSON payload, diagnoses Odoo DB state, and outputs
+    a structured Functional Blueprint + Playwright resolution code.
+    Uses response_schema for deterministic JSON output.
+"""
+
+from __future__ import annotations
+
 import json
+import re
 import time
+import os
+from typing import Optional, Generator
 
-# ── Master Brain Configuration (COO + CTO approved — v1.2) ───────────────────
+# ── Engine 1: Official Groq SDK ───────────────────────────────────────────────
+from groq import Groq  # Verified import
+
+# ── Engine 2: Google Generative AI SDK ───────────────────────────────────────
+from google import genai
+from google.genai import types
+
 SYSTEM_PROMPT = """
-You are an 'Odoo Support Assistant' and 'Senior Functional Support' expert acting as the core intelligence of an automated troubleshooting agent. 
+You are the elite 'Odoo Senior Functional Support Expert' and Multi-Modal Troubleshooting Engine for Project Sane. 
+Your mission is to analyze customer issues, inspect the live database UI via screenshots, and plan exact functional solutions.
 
-Your primary role is to assist support agents by analyzing customer tickets, autonomously navigating duplicate customer databases or 'Runbot' instances, and resolving complex functional issues within the Odoo ecosystem.
+=======================================================================
+CORE MANDATE 1: STRICT BOUNDED SEARCH GROUNDING (ANTI-HALLUCINATION)
+=======================================================================
+Before proposing any functional solution or step, YOU MUST execute a Google Search.
+* Your search queries MUST be explicitly prefixed with: site:odoo.com/documentation/
+* Example: "site:odoo.com/documentation/17.0 inventory valuation configuration"
+* CRITICAL: You are strictly FORBIDDEN from using or referencing data from third-party blogs, forums, Reddit, or unauthorized video tutorials. If a solution is not documented in the official Odoo Enterprise manual for that exact version, it does not exist.
 
-PURPOSE AND GOALS:
-* Expert Functional Support: Provide high-level assistance for Odoo, leveraging deep knowledge of core modules.
-* Problem Resolution: Resolve user tickets by diagnosing issues and offering precise, step-by-step functional solutions derived from official documentation.
-* Source Fidelity: Base all guidance strictly on official Odoo Enterprise features. No custom code workarounds.
+=======================================================================
+CORE MANDATE 2: VISUAL ANCHORING GATE (THE "EYES")
+=======================================================================
+You will be given a base64 screenshot of the current Odoo sandbox landing page alongside the customer ticket.
+* Before writing a single execution step, you must visually inspect the screen.
+* In your thinking block, you must explicitly identify:
+  1. The exact App/Module layout currently active.
+  2. Visible top navigation menus and sidebar elements.
+  3. Any blocking elements (e.g., unexpected welcome wizards, error modals, setup popups).
+* If the UI does not match the starting requirements of the ticket, your first planned steps must explicitly navigate back to the Main Home Dashboard.
 
-CRITICAL CONSTRAINTS:
-1. VERSION SCOPE: You strictly support Odoo versions 16.0, 17.0, 18.0, 19.0, 19.1, 19.2, and 'master'. 
-2. SEARCH GROUNDING: Before answering, YOU MUST use the Google Search tool to search for 'Odoo [VERSION] documentation [TICKET TOPIC]'. 
-3. TONE: Maintain an authoritative, efficient, and precise Support Analyst tone. Use enterprise software terminology.
+=======================================================================
+TWO-STEP DISCIPLINED OUTPUT FORMAT
+=======================================================================
+You must stream your output strictly adhering to these two phases:
 
-TWO-STEP GENERATION PIPELINE:
+<thinking>
+[PHASE 1: VISUAL TRACE]
+* State exactly what screen/app is visible in the provided screenshot. Identify any discrepancies between this screen and the ticket's target module.
 
-STEP 1: THE FUNCTIONAL BLUEPRINT
-When asked to provide the functional steps to solve a ticket, you must strictly output your response starting with your internal reasoning, followed by the Markdown format.
-Before outputting your final Markdown, you must write out your internal reasoning inside <thinking>...</thinking> tags. Look at the provided screenshot of the Odoo UI. This is your starting location. Inside your <thinking> tags, you MUST first state exactly what screen you are currently on. Then, formulate your step-by-step UI plan from this exact starting point. Explain what you searched for, what the Odoo documentation states, and how you plan to navigate the UI.
+[PHASE 2: DOCUMENTATION SYNTHESIS]
+* Detail the exact search queries executed under site:odoo.com/documentation/.
+* Cite the specific functional rules, settings paths, or configuration parameters retrieved from the documentation for Odoo Version [VERSION].
 
-After the </thinking> tag, you must strictly output Markdown in this exact format:
+[PHASE 3: TARGETED ACTION BLUEPRINT]
+* Map out the logical path from the current screen to the final destination.
+* Prioritize targeting stable, persistent elements (e.g., string matching on button names like 'Settings', 'Save', or explicit tags like data-menu-xmlid) over fragile, dynamic CSS class names.
+</thinking>
 
 ### 1. Request Summary
-[Restate the user's inquiry clearly: what the customer is requesting and what they want to achieve.]
+[Provide a highly focused technical distillation of the customer's exact functional goal]
 
 ### 2. Diagnosis & Cause
-[Classify the query as an information request, configuration hurdle, or functional bug. Explain the standard behavior based on official documentation.]
+[Classify as: Configuration Hurdle, Information Request, or Functional Bug. Detail the underlying root cause based strictly on official Odoo mechanics]
 
 ### 3. Solution Path
-[Provide precise, step-by-step UI navigation instructions to resolve the issue. Example: 'Go to **Settings** > **Translations** > **Languages**'. These exact steps will be used to write browser automation code, so menu accuracy is paramount.]
-
-STEP 2: CODE TRANSLATION
-When provided with a 'Solution Path', translate those exact steps into a robust, async Playwright Python snippet to automate the UI clicks inside the Odoo database.
+[Provide a precise, bulleted list of UI navigation steps. Every step must be unambiguous. Example: 
+* Click the main App Switcher button in the top left corner.
+* Select the **Settings** App from the dashboard menu.
+* Locate the **Invoicing** section in the left sidebar and click it.
+* Check the box labeled **Automatic Post** under the generic settings block.]
 """
 
 
 class AIAgent:
-    def __init__(self, groq_api_key: str = None, gemini_api_key: str = None):
-        # Option C: Hybrid Routing
-        # Groq: fast, high quota — used for structured JSON extraction (analyse_ticket)
-        # Gemini: quality + search grounding — used for synthesis & script generation
-        self.groq_api_key = groq_api_key
-        self.gemini_api_key = gemini_api_key
+    """
+    Dual Cloud Engine coordinator.
 
-        # Groq configuration (fast extraction)
-        self.groq_base_url = "https://api.groq.com/openai/v1/chat/completions"
-        self.groq_model = "llama-3.3-70b-versatile"
-        self.groq_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {groq_api_key}"
-        } if groq_api_key else None
+    Engine 1 (Groq)   — ticket triage, streaming JSON extraction
+    Engine 2 (Gemini) — multimodal diagnosis, blueprint + code generation
+    """
 
-        # Gemini configuration (quality synthesis + search grounding)
-        self.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        self.gemini_model = "gemini-2.5-pro"
-        self.gemini_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {gemini_api_key}"
-        } if gemini_api_key else None
+    def __init__(
+        self,
+        groq_api_key: str = None,
+        gemini_api_key: str = None,
+        # Legacy provider fields kept for backward compatibility with server.py
+        ai_provider: str = "groq",
+        ai_model: str = "llama-3.1-8b-instant",
+        vision_provider: str = "gemini",
+        vision_model: str = "gemini-2.5-flash",
+    ):
+        # ── Engine 1: Groq SDK client ─────────────────────────────────────────
+        self._groq_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
+        self._groq_model = "llama-3.1-8b-instant"
+        self._groq_client: Optional[Groq] = None
+        if self._groq_key:
+            self._groq_client = Groq(api_key=self._groq_key)
 
-    def _call_groq(self, system: str, user: str, max_tokens: int = 1024,
-                   retries: int = 3) -> str:
-        """Call Groq API — fast, high quota, good for structured JSON extraction."""
-        if not self.groq_api_key or not self.groq_headers:
-            print("[Groq] No API key configured")
-            return ""
+        # ── Engine 2: Gemini SDK client ───────────────────────────────────────
+        self._gemini_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
+        self._gemini_model = "gemini-2.5-flash"
+        self._gemini_client: Optional[genai.Client] = None
+        if self._gemini_key:
+            self._gemini_client = genai.Client(api_key=self._gemini_key)
 
-        payload = {
-            "model": self.groq_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.1
-        }
-        wait = 5  # Groq has high rate limits, shorter wait
-        for attempt in range(1, retries + 1):
-            try:
-                response = requests.post(self.groq_base_url, headers=self.groq_headers, json=payload)
-                if response.status_code == 429:
-                    print(f"[Groq] Rate limit (attempt {attempt}/{retries}). Waiting {wait}s...")
-                    time.sleep(wait)
-                    wait *= 2
-                    continue
-                response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
-            except Exception as e:
-                if attempt == retries:
-                    print(f"Error calling Groq after {retries} attempts: {e}")
-                    return ""
-                print(f"[Groq] Error attempt {attempt}: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-                wait *= 2
-        return ""
+        # Legacy aliases (server.py still references these)
+        self.ai_provider = ai_provider
+        self.ai_model = self._groq_model
+        self.vision_provider = vision_provider
+        self.vision_model = self._gemini_model
+        self.groq_api_key = self._groq_key
+        self.gemini_api_key = self._gemini_key
 
-    def _call_gemini(self, system: str, user: str, max_tokens: int = 1024,
-                     retries: int = 3, model: str = None) -> str:
-        """Call Gemini API — high quality, used for synthesis and search grounding."""
-        if not self.gemini_api_key or not self.gemini_headers:
-            print("[Gemini] No API key configured")
-            return ""
+    # ══════════════════════════════════════════════════════════════════════════
+    # ENGINE 1 — GROQ TRIAGE (llama-3.1-8b-instant)
+    # ══════════════════════════════════════════════════════════════════════════
 
-        model = model or self.gemini_model
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.1
-        }
-        wait = 10  # Gemini has stricter rate limits
-        for attempt in range(1, retries + 1):
-            try:
-                response = requests.post(self.gemini_base_url, headers=self.gemini_headers, json=payload)
-                if response.status_code == 429:
-                    print(f"[Gemini/{model}] Rate limit (attempt {attempt}/{retries}). Waiting {wait}s...")
-                    time.sleep(wait)
-                    wait *= 2
-                    continue
-                response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
-            except Exception as e:
-                if attempt == retries:
-                    print(f"Error calling Gemini/{model} after {retries} attempts: {e}")
-                    return ""
-                print(f"[Gemini/{model}] Error attempt {attempt}: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-                wait *= 2
-        return ""
-
-    def analyse_ticket(self, ticket_text: str) -> dict:
+    def _groq_stream(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 1024,
+        run_logger=None,
+        purpose: str = "",
+    ) -> Generator[str, None, None]:
         """
-        Structured JSON extraction — uses Groq for fast, reliable structured output.
-        SYSTEM_PROMPT is not used here because this task requires strict JSON.
+        Engine 1 core — streams tokens from Groq using the official SDK.
+        Falls back to empty string on any error; always logs via RunLogger.
         """
-        extraction_prompt = (
-            "You are an expert Odoo support analyst. Extract structured information from the\n"
-            "support ticket. Return ONLY valid JSON with these exact keys:\n"
+        if not self._groq_client:
+            print("[Groq] No API key configured — skipping Engine 1 call.")
+            yield ""
+            return
+
+        full_response = ""
+        error_str: Optional[str] = None
+        t0 = time.time()
+
+        is_local = os.getenv("ACTIVE_PROVIDER") == "local"
+        if is_local:
+            max_tokens = 8192
+
+        try:
+            stream = self._groq_client.chat.completions.create(
+                model=self._groq_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=max_tokens,
+                temperature=0.1,
+                stream=True,
+            )
+            for chunk in stream:
+                token = chunk.choices[0].delta.content or ""
+                if token:
+                    full_response += token
+                    yield token
+
+        except Exception as e:
+            error_str = str(e)
+            # Detect Groq rate-limit specifically for the logger
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                print(f"[Groq Engine 1] Rate limit hit: {e}")
+            else:
+                print(f"[Groq Engine 1] Error: {e}")
+            yield ""
+
+        finally:
+            latency_ms = (time.time() - t0) * 1000
+            if run_logger is not None:
+                payload = {
+                    "model": self._groq_model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.1,
+                    "stream": True,
+                }
+                run_logger.log_llm_call(
+                    model=self._groq_model,
+                    provider="groq",
+                    system_prompt=system,
+                    user_prompt=user,
+                    raw_response=full_response,
+                    latency_ms=latency_ms,
+                    purpose=purpose,
+                    error=error_str,
+                    final_payload=payload,
+                )
+
+    def analyse_ticket_stream(
+        self, ticket_text: str, run_logger=None
+    ) -> Generator[str, None, None]:
+        """
+        Engine 1 — Streaming ticket triage.
+        Yields tokens. Caller must collect full_response and call _parse_ticket_json().
+        """
+        system = (
+            "You are an expert Odoo support analyst. Think through the ticket carefully, "
+            "then extract structured information. First share your reasoning, then on a new line "
+            "output a JSON block wrapped in ```json ... ``` with these exact keys:\n"
             '- "summary": one sentence describing the issue\n'
-            '- "odoo_version": the Odoo version mentioned (e.g. "17.0") or null if not found\n'
-            '- "module": the Odoo module involved (e.g. "Accounting", "Inventory") or null\n'
+            '- "odoo_version": the Odoo version mentioned (e.g. "17.0") or null\n'
+            '- "module": the Odoo module involved or null\n'
             '- "error_message": the exact error text if present, or null\n'
-            '- "steps_to_reproduce": list of steps to reproduce the issue, or empty list []\n'
-            '- "check_runbot": true if standard Odoo behaviour needs verification, false otherwise\n'
-            '- "config_keys_to_check": list of configuration settings to check, or empty list []\n'
-            "Return only the JSON object. No explanation, no markdown, no code fences."
+            '- "steps_to_reproduce": list of steps, or []\n'
+            '- "check_runbot": true if standard behaviour needs verification, false otherwise\n'
+            '- "config_keys_to_check": list of config settings to check, or []'
+        )
+        yield from self._groq_stream(
+            system, ticket_text, max_tokens=1024,
+            run_logger=run_logger, purpose="ticket_triage_groq",
         )
 
-        # Option C: Use Groq for fast JSON extraction (high quota, proven reliable)
-        response_text = self._call_groq(extraction_prompt, ticket_text)
+    def generate_plan_stream(
+        self, ticket_text: str, ticket_info: dict, run_logger=None
+    ) -> Generator[str, None, None]:
+        """
+        Engine 1 — Streaming investigation plan generation.
+        Yields tokens forming a numbered action list.
+        """
+        system = (
+            "You are an expert Odoo support analyst planning a browser investigation. "
+            "Think through the ticket carefully, then write a clear numbered investigation plan. "
+            "First share your reasoning about what could be causing the issue. "
+            "Then write the plan as a numbered list of concrete browser actions. "
+            "Maximum 8 steps. Each step must be a single specific action."
+        )
+        user = (
+            f"Ticket summary: {ticket_info.get('summary', '')}\n"
+            f"Module: {ticket_info.get('module', '')}\n"
+            f"Odoo version: {ticket_info.get('odoo_version', '')}\n"
+            f"Error: {ticket_info.get('error_message', '')}\n"
+            f"Steps to reproduce: {ticket_info.get('steps_to_reproduce', [])}\n\n"
+            "Write your reasoning and then the investigation plan."
+        )
+        yield from self._groq_stream(
+            system, user, max_tokens=512,
+            run_logger=run_logger, purpose="plan_generation_groq",
+        )
 
-        # Strip any possible markdown fences if the AI disobeys
-        response_text = response_text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text[7:]
-        if response_text.endswith("```"):
-            response_text = response_text[:-3]
-        response_text = response_text.strip()
+    def analyse_ticket(self, ticket_text: str, run_logger=None) -> dict:
+        """
+        Engine 1 — Synchronous (non-streaming) ticket triage.
+        Collects stream internally and returns parsed JSON dict.
+        Used by main.py CLI path.
+        """
+        full_response = ""
+        for token in self._groq_stream(
+            system=(
+                "You are an expert Odoo support analyst. Extract structured information from the\n"
+                "support ticket. Return ONLY valid JSON with these exact keys:\n"
+                '- "summary": one sentence describing the issue\n'
+                '- "odoo_version": the Odoo version mentioned (e.g. "17.0") or null if not found\n'
+                '- "module": the Odoo module involved (e.g. "Accounting", "Inventory") or null\n'
+                '- "error_message": the exact error text if present, or null\n'
+                '- "steps_to_reproduce": list of steps to reproduce the issue, or empty list []\n'
+                '- "check_runbot": true if standard Odoo behaviour needs verification, false otherwise\n'
+                '- "config_keys_to_check": list of configuration settings to check, or empty list []\n'
+                "Return only the JSON object. No explanation, no markdown, no code fences."
+            ),
+            user=ticket_text,
+            max_tokens=1024,
+            run_logger=run_logger,
+            purpose="ticket_triage_groq_sync",
+        ):
+            full_response += token
+        return self._parse_ticket_json(full_response)
 
+    def _parse_ticket_json(self, full_response: str) -> dict:
+        """Extract and parse the JSON block from a streamed Engine 1 response."""
         defaults = {
-            "summary": None,
+            "summary": "Could not parse ticket summary",
             "odoo_version": None,
             "module": None,
             "error_message": None,
             "steps_to_reproduce": [],
             "check_runbot": False,
-            "config_keys_to_check": []
+            "config_keys_to_check": [],
         }
+        # Try ```json ... ``` fence first
+        match = re.search(r"```json\s*(.*?)\s*```", full_response, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(1))
+                for key in defaults:
+                    if key not in parsed:
+                        parsed[key] = defaults[key]
+                return parsed
+            except Exception:
+                pass
+        # Fallback: bare { ... } block
+        match = re.search(r"\{.*\}", full_response, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                for key in defaults:
+                    if key not in parsed:
+                        parsed[key] = defaults[key]
+                return parsed
+            except Exception:
+                pass
+        return defaults
 
-        try:
-            parsed = json.loads(response_text)
-            for key in defaults:
-                if key not in parsed:
-                    parsed[key] = defaults[key]
-            return parsed
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from Gemini: {e}\nResponse was: {response_text}")
-            return defaults
+    # ══════════════════════════════════════════════════════════════════════════
+    # ENGINE 2 — GEMINI AI STUDIO (gemini-2.5-flash)
+    # ══════════════════════════════════════════════════════════════════════════
 
-    async def generate_playwright_execution_async(self, ticket_info: dict, url: str, stream_callback=None, screenshot_b64: str=None) -> str:
+    async def generate_playwright_execution_async(
+        self,
+        ticket_info: dict,
+        url: str,
+        stream_callback=None,
+        screenshot_b64: str = None,
+        run_logger=None,
+    ) -> str:
         """
-        Two-step pipeline — SYSTEM_PROMPT governs both steps.
+        Engine 2 — Multimodal visual conductor.
 
-        Step 1 (FUNCTIONAL BLUEPRINT): Gemini + Google Search Grounding searches
-                the official Odoo docs in real-time and outputs a structured
-                Markdown blueprint (Summary / Diagnosis / Solution Path).
+        Step 1: Receives Groq's JSON + base64 screenshot → produces a
+                Functional Blueprint (Request Summary / Diagnosis / Solution Path)
+                using Google Search grounding against official Odoo docs.
 
-        Step 2 (CODE TRANSLATION): SYSTEM_PROMPT instructs Gemini to translate
-                the Solution Path into a raw async Playwright Python snippet.
+        Step 2: Translates the Solution Path into a raw async Playwright snippet.
+
+        Args:
+            ticket_info:    Dict produced by Engine 1 (Groq triage).
+            url:            Active Odoo duplicate DB URL (already authenticated).
+            stream_callback: async callable(event_type, text_chunk) for SSE streaming.
+            screenshot_b64: Base64 PNG of the current Odoo DB screen.
+            run_logger:     RunLogger instance for structured audit trail.
+
+        Returns:
+            Raw Python string — the Playwright automation snippet.
         """
-        from google import genai
-        from google.genai import types
+        import asyncio
+        import base64
+
+        if not self._gemini_client:
+            print("[Gemini Engine 2] No API key — cannot generate execution plan.")
+            return ""
 
         odoo_version = ticket_info.get("odoo_version") or "17.0"
         topic = ticket_info.get("module") or ticket_info.get("summary") or "general feature"
         summary = ticket_info.get("summary", "")
         steps_requested = ticket_info.get("steps_to_reproduce", [])
 
-        # ── Step 1: Search-grounded Functional Blueprint ───────────────────────
-        # SYSTEM_PROMPT is passed as system_instruction so the model knows its role
-        # and output format before it even reads the user message.
+        # ── STEP 1: Search-Grounded Functional Blueprint ───────────────────────
         step1_user = (
             f"Before answering, YOU MUST use the Google Search tool to search for "
             f"'Odoo {odoo_version} documentation {topic}'. "
@@ -217,122 +370,103 @@ class AIAgent:
             f"Steps requested by analyst: {steps_requested}"
         )
 
-        functional_blueprint = ""
-        try:
-            import time
-            import asyncio
-            import os
-            
-            provider = os.getenv("ACTIVE_PROVIDER", "gemini")
-            
-            if provider == "local":
-                import openai
-                client = openai.AsyncOpenAI(
-                    base_url=os.getenv("LOCAL_API_BASE", "http://127.0.0.1:1234/v1"),
-                    api_key="local" # LM studio ignores
+        # Build multimodal contents list (screenshot + text)
+        contents = []
+        if screenshot_b64:
+            try:
+                contents.append(
+                    types.Part.from_bytes(
+                        data=base64.b64decode(screenshot_b64),
+                        mime_type="image/png",
+                    )
                 )
-                
-                user_msg_content = [{"type": "text", "text": step1_user}]
-                if screenshot_b64:
-                    user_msg_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}
-                    })
-                
-                wait = 20
-                for attempt in range(1, 4):
-                    try:
-                        response = await client.chat.completions.create(
-                            model="local-model",
-                            messages=[
-                                {"role": "system", "content": SYSTEM_PROMPT},
-                                {"role": "user", "content": user_msg_content}
-                            ],
-                            stream=True
+            except Exception as e:
+                print(f"[Gemini Engine 2] Screenshot decode failed: {e}")
+        contents.append(step1_user)
+
+        functional_blueprint = ""
+        step1_error: Optional[str] = None
+        t0 = time.time()
+
+        is_local = os.getenv("ACTIVE_PROVIDER") == "local"
+        config_kwargs = {
+            "system_instruction": SYSTEM_PROMPT,
+            "tools": [types.Tool(google_search=types.GoogleSearch())]
+        }
+        if is_local:
+            config_kwargs["temperature"] = 0.1
+            config_kwargs["max_output_tokens"] = 8192
+
+        wait = 20
+        for attempt in range(1, 4):
+            try:
+                response = await self._gemini_client.aio.models.generate_content_stream(
+                    model=self._gemini_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+
+                last_stream_idx = 0
+                async for chunk in response:
+                    if chunk.text:
+                        functional_blueprint += chunk.text
+
+                    # Stream <thinking> tokens to frontend in real-time
+                    if "<thinking>" in functional_blueprint:
+                        start_idx = functional_blueprint.find("<thinking>") + len("<thinking>")
+                        end_idx = functional_blueprint.find("</thinking>")
+                        current_end = end_idx if end_idx != -1 else len(functional_blueprint)
+                        new_text = functional_blueprint[
+                            max(start_idx, last_stream_idx):current_end
+                        ]
+                        if new_text and stream_callback:
+                            await stream_callback("thinking_stream", new_text)
+                        last_stream_idx = max(start_idx, last_stream_idx) + len(new_text)
+
+                print(f"[Gemini Engine 2 — Step 1 Blueprint]:\n{functional_blueprint[:300]}...")
+                break
+
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "quota" in err_str.lower():
+                    print(
+                        f"[Gemini Engine 2] Rate limit (attempt {attempt}/3). "
+                        f"Waiting {wait}s..."
+                    )
+                    if run_logger:
+                        run_logger.log_engine2_rate_limit(
+                            attempt=attempt, wait_s=wait, error=err_str
                         )
-                        in_thinking = False
-                        last_stream_idx = 0
-                        async for chunk in response:
-                            if getattr(chunk.choices[0].delta, 'content', None):
-                                text_chunk = chunk.choices[0].delta.content
-                                functional_blueprint += text_chunk
-                            if "<thinking>" in functional_blueprint:
-                                start_idx = functional_blueprint.find("<thinking>") + len("<thinking>")
-                                end_idx = functional_blueprint.find("</thinking>")
-                                current_end = end_idx if end_idx != -1 else len(functional_blueprint)
-                                
-                                new_text = functional_blueprint[max(start_idx, last_stream_idx):current_end]
-                                if new_text and stream_callback:
-                                    await stream_callback("thinking_stream", new_text)
-                                
-                                last_stream_idx = max(start_idx, last_stream_idx) + len(new_text)
-                        
-                        print(f"[Step 1 — Local Model Blueprint]:\n{functional_blueprint[:500]}...")
-                        break
-                    except Exception as e:
-                        print(f"[Step 1] Request failed (attempt {attempt}/3). Waiting {wait}s... {e}")
-                        await asyncio.sleep(wait)
-                        wait *= 2
-                        if attempt == 3: raise
-            
-            else: # Gemini path
-                client = genai.Client(api_key=self.gemini_api_key)
-                
-                contents = []
-                if screenshot_b64:
-                    from google.genai.types import Part
-                    import base64
-                    contents.append(Part.from_bytes(data=base64.b64decode(screenshot_b64), mime_type='image/png'))
-                contents.append(step1_user)
-                
-                wait = 20
-                for attempt in range(1, 4):
-                    try:
-                        response = await client.aio.models.generate_content_stream(
-                            model=self.gemini_model,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                system_instruction=SYSTEM_PROMPT,
-                                tools=[types.Tool(google_search=types.GoogleSearch())],
-                            ),
-                        )
-                        in_thinking = False
-                        last_stream_idx = 0
-                        async for chunk in response:
-                            if chunk.text:
-                                functional_blueprint += chunk.text
-                            if "<thinking>" in functional_blueprint:
-                                start_idx = functional_blueprint.find("<thinking>") + len("<thinking>")
-                                end_idx = functional_blueprint.find("</thinking>")
-                                current_end = end_idx if end_idx != -1 else len(functional_blueprint)
-                                
-                                new_text = functional_blueprint[max(start_idx, last_stream_idx):current_end]
-                                if new_text and stream_callback:
-                                    await stream_callback("thinking_stream", new_text)
-                                
-                                last_stream_idx = max(start_idx, last_stream_idx) + len(new_text)
-                        
-                        print(f"[Step 1 — Grounded Blueprint]:\n{functional_blueprint[:500]}...")
-                        break
-                    except Exception as e:
-                        if "429" in str(e) or "quota" in str(e).lower():
-                            print(f"[Step 1] Rate limit hit (attempt {attempt}/3). Waiting {wait}s...")
-                            await asyncio.sleep(wait)
-                            wait *= 2
-                        else:
-                            raise
-        except Exception as e:
-            print(f"[Step 1] Search grounding failed — falling back to ticket summary: {e}")
+                    await asyncio.sleep(wait)
+                    wait *= 2
+                else:
+                    step1_error = err_str
+                    print(f"[Gemini Engine 2] Step 1 fatal error: {e}")
+                    raise
+
+        # Log Step 1 call
+        if run_logger:
+            latency_ms = (time.time() - t0) * 1000
+            run_logger.log_llm_call(
+                model=self._gemini_model,
+                provider="gemini",
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=step1_user,
+                raw_response=functional_blueprint,
+                latency_ms=latency_ms,
+                purpose="blueprint_generation_gemini",
+                error=step1_error,
+            )
+
+        # Graceful fallback if Step 1 produced nothing
+        if not functional_blueprint.strip():
             functional_blueprint = (
                 f"### 1. Request Summary\n{summary}\n\n"
                 f"### 3. Solution Path\n"
                 + "\n".join(f"- {s}" for s in steps_requested)
             )
 
-
-        # ── Step 2: CODE TRANSLATION ───────────────────────────────────────────
-        # SYSTEM_PROMPT already instructs the model on what Step 2 means.
-        # We activate it by referencing 'Solution Path' from the blueprint.
+        # ── STEP 2: Code Translation ───────────────────────────────────────────
         step2_user = (
             f"STEP 2 — CODE TRANSLATION\n\n"
             f"Using the Solution Path from the Functional Blueprint below, "
@@ -343,32 +477,45 @@ class AIAgent:
             f"--- FUNCTIONAL BLUEPRINT ---\n{functional_blueprint}"
         )
 
-        import asyncio
-        loop = asyncio.get_event_loop()
-        import functools
-        import os
-        
-        provider = os.getenv("ACTIVE_PROVIDER", "gemini")
-        if provider == "local":
-            async def call_local_step2():
-                import openai
-                c = openai.AsyncOpenAI(
-                    base_url=os.getenv("LOCAL_API_BASE", "http://127.0.0.1:1234/v1"),
-                    api_key="local"
-                )
-                r = await c.chat.completions.create(
-                    model="local-model",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": step2_user}
-                    ]
-                )
-                return r.choices[0].message.content
-            code = await call_local_step2()
-        else:
-            code = await loop.run_in_executor(None, functools.partial(self._call_gemini, SYSTEM_PROMPT, step2_user, 1024))
+        code = ""
+        step2_error: Optional[str] = None
+        t1 = time.time()
 
-        # Sanitise markdown fences defensively
+        config_kwargs_2 = {"system_instruction": SYSTEM_PROMPT}
+        if is_local:
+            config_kwargs_2["temperature"] = 0.1
+            config_kwargs_2["max_output_tokens"] = 8192
+
+        try:
+            response2 = await self._gemini_client.aio.models.generate_content(
+                model=self._gemini_model,
+                contents=[step2_user],
+                config=types.GenerateContentConfig(**config_kwargs_2),
+            )
+            code = response2.text or ""
+        except Exception as e:
+            step2_error = str(e)
+            print(f"[Gemini Engine 2] Step 2 error: {e}")
+            if run_logger:
+                run_logger.log_engine2_schema_exception(
+                    context="step2_code_translation", error=str(e)
+                )
+
+        # Log Step 2 call
+        if run_logger:
+            latency_ms = (time.time() - t1) * 1000
+            run_logger.log_llm_call(
+                model=self._gemini_model,
+                provider="gemini",
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=step2_user,
+                raw_response=code,
+                latency_ms=latency_ms,
+                purpose="code_translation_gemini",
+                error=step2_error,
+            )
+
+        # Sanitise any markdown fences defensively
         for fence in ("```python", "```"):
             if code.startswith(fence):
                 code = code[len(fence):]
@@ -377,11 +524,16 @@ class AIAgent:
 
         return code.strip()
 
-    def synthesise_resolution(self, ticket_text: str, findings: str) -> str:
+    def synthesise_resolution(
+        self, ticket_text: str, findings: str, run_logger=None
+    ) -> str:
         """
-        Final report synthesis — SYSTEM_PROMPT governs the output format
-        (Request Summary / Diagnosis & Cause / Solution Path sections).
+        Engine 2 — Synchronous final report synthesis (used by main.py CLI).
+        Runs Gemini synchronously via the standard (non-async) client method.
         """
+        if not self._gemini_client:
+            return "Gemini not configured — cannot synthesise resolution."
+
         user_message = (
             "TICKET:\n"
             f"{ticket_text}\n\n"
@@ -391,4 +543,54 @@ class AIAgent:
             "produce the full Resolution Guide in the required Markdown format."
         )
 
-        return self._call_gemini(SYSTEM_PROMPT, user_message, max_tokens=2048)
+        code = ""
+        error_str: Optional[str] = None
+        t0 = time.time()
+        wait = 10
+
+        is_local = os.getenv("ACTIVE_PROVIDER") == "local"
+        config_kwargs = {"system_instruction": SYSTEM_PROMPT}
+        if is_local:
+            config_kwargs["temperature"] = 0.1
+            config_kwargs["max_output_tokens"] = 8192
+
+        for attempt in range(1, 4):
+            try:
+                response = self._gemini_client.models.generate_content(
+                    model=self._gemini_model,
+                    contents=[user_message],
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+                code = response.text or ""
+                break
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "quota" in error_str.lower():
+                    print(
+                        f"[Gemini Engine 2] Rate limit on synthesis "
+                        f"(attempt {attempt}/3). Waiting {wait}s..."
+                    )
+                    if run_logger:
+                        run_logger.log_engine2_rate_limit(
+                            attempt=attempt, wait_s=wait, error=error_str
+                        )
+                    time.sleep(wait)
+                    wait *= 2
+                else:
+                    print(f"[Gemini Engine 2] Synthesis error: {e}")
+                    break
+
+        if run_logger:
+            latency_ms = (time.time() - t0) * 1000
+            run_logger.log_llm_call(
+                model=self._gemini_model,
+                provider="gemini",
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_message,
+                raw_response=code,
+                latency_ms=latency_ms,
+                purpose="resolution_synthesis_gemini",
+                error=error_str,
+            )
+
+        return code
