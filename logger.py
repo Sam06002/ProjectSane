@@ -56,6 +56,7 @@ class RunLogger:
 
     def __init__(self):
         self._run_id: str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        self.run_id: str = self._run_id
         self._started_at: float = time.time()
 
         # ── Structured payload ────────────────────────────────────────────────

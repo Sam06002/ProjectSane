@@ -835,7 +835,7 @@ async def run_pipeline(request: Request):
                 ticket_info=ticket_info,
                 approved_plan=plan_full,
                 gemini_api_key=gemini_key,
-                job_id=run_log.run_id,
+                job_id=obs.run_id,
             )
         except Exception as e:
             await obs.on_step_failure(0, f"Graph execution error: {e}")
