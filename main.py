@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 
 from ai_agent import AIAgent
-from browser_agent import BrowserAgent
+from browser_agent import BrowserManager as BrowserAgent  # legacy alias — class renamed to BrowserManager
 from doc_writer import generate_report
 
 load_dotenv()

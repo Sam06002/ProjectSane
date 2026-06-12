@@ -29,8 +29,6 @@ from ai_agent import AIAgent
 from logger import RunLogger
 from monitor import ObservationLayer, get_run_history, get_run_detail
 from planner import Planner
-from schema import ExecutionResult
-from executor import ExecutionEngine
 from browser_agent import BrowserManager
 from stream_manager import StreamManager
 
@@ -820,65 +818,46 @@ async def run_pipeline(request: Request):
             executed=True, reason="Confidence above threshold"
         )
 
-        # ── Execution loop ────────────────────────────────────────────────────
-        engine = ExecutionEngine(page, run_logger=run_log)
-        results = []
-        findings = []
+        # ── Graph-Based Execution ─────────────────────────────────────────────
+        yield StreamManager.emit_thinking(
+            0, "Graph Execution",
+            "Launching LangGraph multi-agent state machine (planner → executor → reviewer)..."
+        )
+        await obs.record_event("Graph Execution", "LangGraph state machine started")
+        async for msg in flush_monitor():
+            yield msg
 
-        for step in plan.steps:
-            # ── Session Recovery ──
-            # Detect session expiration / redirect to login page before executing the step
-            if "/web/login" in page.url:
-                yield StreamManager.emit_thinking(step.id, "Session Recovery", "Odoo login page detected. Session may have expired. Recovering session via support gateway...")
-                async for msg in authenticate_via_support_gateway(db_url):
-                    yield msg
-                
-                # Navigate back to the backend apps page if possible
-                try:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(db_url)
-                    base_url = f"{parsed.scheme}://{parsed.netloc}"
-                    yield StreamManager.emit_thinking(step.id, "Session Recovery", f"Returning to database dashboard at {base_url}...")
-                    await page.goto(f"{base_url}/odoo", timeout=20000)
-                except Exception:
-                    pass
+        graph_report = ""
+        try:
+            graph_report = await browser_manager.investigate_with_graph(
+                base_url=db_url,
+                ticket_text=ticket_text,
+                ticket_info=ticket_info,
+                approved_plan=plan_full,
+                gemini_api_key=gemini_key,
+                job_id=run_log.run_id,
+            )
+        except Exception as e:
+            await obs.on_step_failure(0, f"Graph execution error: {e}")
+            async for msg in flush_monitor():
+                yield msg
+            run_log.save()
+            obs.finalise()
+            yield StreamManager.emit_error(f"Graph execution failed: {e}")
+            await browser_manager.stop()
+            return
 
-            yield StreamManager.emit_thinking(step.id, step.intent, step.reasoning)
-            await asyncio.sleep(0.5)
-
-            yield StreamManager.emit_action_start(step.id, step.action.type.value, step.action.target)
-
-            res: ExecutionResult = await engine.execute_step(step)
-
-            # If the step failed, check if we were redirected to Odoo login page during the action
-            if not res.success and "/web/login" in page.url:
-                yield StreamManager.emit_thinking(step.id, "Session Recovery", "Action failed due to Odoo login redirect. Recovering session and retrying step...")
-                async for msg in authenticate_via_support_gateway(db_url):
-                    yield msg
-                
-                # Re-attempt the step after login recovery
-                res = await engine.execute_step(step)
-
-            results.append(res)
-
-            yield StreamManager.emit_action_result(step.id, res.success, res.message, res.extracted_text)
-
-            if res.extracted_text:
-                findings.append(f"Step {step.id} extracted: {res.extracted_text}")
-
-            if not res.success:
-                await obs.on_step_failure(step.id, res.message)
-                async for msg in flush_monitor():
-                    yield msg
-                yield StreamManager.emit_error(f"Step {step.id} failed: {res.message}")
-                break
-
-            await asyncio.sleep(1)
+        yield StreamManager.emit_thinking(
+            0, "Graph Complete",
+            "LangGraph state machine finished — assembling final report."
+        )
+        await obs.record_event("Graph Complete", "LangGraph state machine finished")
+        async for msg in flush_monitor():
+            yield msg
 
         # ── Cleanup & report ──────────────────────────────────────────────────
         await browser_manager.stop()
 
-        success_count = sum(1 for r in results if r.success)
         monitor_summary = obs.finalise()
         log_path = run_log.save()
 
@@ -887,17 +866,13 @@ async def run_pipeline(request: Request):
             "module": plan.module,
             "confidence": plan.confidence,
             "steps_total": len(plan.steps),
-            "steps_succeeded": success_count,
-            "steps_failed": len(results) - success_count,
+            "steps_succeeded": 0,
+            "steps_failed": 0,
             "was_executed": True,
             "skip_reason": None,
-            "results": [r.dict() for r in results],
-            "findings": findings,
-            "recommendation": (
-                "Execution completed successfully."
-                if success_count == len(plan.steps)
-                else "Execution failed midway — see monitor_summary for errors."
-            ),
+            "results": [],
+            "findings": [graph_report] if graph_report else [],
+            "recommendation": graph_report or "Graph execution produced no report.",
             "log_path": log_path,
             "monitor_summary": monitor_summary,
         }

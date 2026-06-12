@@ -96,9 +96,7 @@ class AIAgent:
         groq_api_key: str = None,
         gemini_api_key: str = None,
         # Legacy provider fields kept for backward compatibility with server.py
-        ai_provider: str = "groq",
         ai_model: str = "llama-3.1-8b-instant",
-        vision_provider: str = "gemini",
         vision_model: str = "gemini-2.5-flash",
     ):
         # ── Engine 1: Groq SDK client ─────────────────────────────────────────
@@ -116,9 +114,7 @@ class AIAgent:
             self._gemini_client = genai.Client(api_key=self._gemini_key)
 
         # Legacy aliases (server.py still references these)
-        self.ai_provider = ai_provider
         self.ai_model = self._groq_model
-        self.vision_provider = vision_provider
         self.vision_model = self._gemini_model
         self.groq_api_key = self._groq_key
         self.gemini_api_key = self._gemini_key

@@ -6,4 +6,11 @@ fastapi>=0.110.0
 uvicorn>=0.27.0
 jinja2>=3.1.0
 python-multipart>=0.0.9
-google-genai>=1.0.0
+# ── Dual Cloud Engine ─────────────────────────────────────────────────────────
+groq>=0.9.0                  # Engine 1: Groq triage (llama-3.1-8b-instant)
+google-genai>=1.0.0          # Engine 2: Gemini AI Studio (gemini-2.5-flash)
+openai>=1.0.0                # Retained for Planner (LM Studio / OpenAI-compat)
+# ── LangGraph Multi-Agent State Machine ────────────────────────────────────────
+langgraph>=0.1.0              # State graph orchestration
+langsmith>=0.1.0              # Runtime execution tracing
+langchain-google-genai>=2.1.0 # LangChain wrapper for Gemini (graph node LLM)
