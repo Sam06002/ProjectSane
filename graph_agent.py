@@ -12,9 +12,12 @@ LangSmith tracing is activated automatically via LANGCHAIN_TRACING_V2 env var.
 
 from __future__ import annotations
 
+import base64
 import os
+import time
 from typing import TypedDict, Optional
 
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 
@@ -88,13 +91,15 @@ async def planner_node(state: GraphState) -> dict:
     }
 
 
-async def executor_node(state: GraphState) -> dict:
+async def executor_node(state: GraphState, browser=None) -> dict:
     """
-    EXECUTOR NODE — Executes tool loops on the Odoo sandbox.
+    EXECUTOR NODE — Inspects the live Odoo sandbox and executes the plan.
 
-    Takes the detailed investigation plan and simulates execution by
-    analysing each step against the sandbox context.  Captures the
-    investigation output as a single result text block.
+    When a live BrowserManager is supplied, the node captures a real-time,
+    full-page screenshot of the active Playwright viewport, records it in the
+    browser's screenshot history, and hands it to Gemini as multimodal context
+    so the evaluation is grounded in the true sandbox state (not a text-only
+    simulation). Falls back to text-only reasoning if no live page is available.
 
     The attempt counter is incremented on each pass to enforce the retry ceiling.
     """
@@ -102,6 +107,29 @@ async def executor_node(state: GraphState) -> dict:
 
     current_attempt = state.get("attempt", 0) + 1
     feedback = state.get("feedback", "")
+
+    # ── Live Visual Evidence Collection (the graph's "Eyes") ──────────────────
+    screenshot_b64 = ""
+    current_url = state["base_url"]
+    if browser is not None and getattr(browser, "page", None) is not None:
+        current_url = browser.page.url or current_url
+        try:
+            os.makedirs("output", exist_ok=True)
+            screenshot_path = (
+                f"output/graph_step_attempt_{current_attempt}_{int(time.time())}.png"
+            )
+            await browser.page.screenshot(path=screenshot_path, full_page=True)
+
+            # Record in the browser manager's screenshot history
+            if getattr(browser, "screenshots", None) is None:
+                browser.screenshots = []
+            if screenshot_path not in browser.screenshots:
+                browser.screenshots.append(screenshot_path)
+
+            with open(screenshot_path, "rb") as f:
+                screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            print(f"[Graph Executor] Live screenshot capture failed: {e}")
 
     feedback_section = ""
     if feedback:
@@ -111,22 +139,36 @@ async def executor_node(state: GraphState) -> dict:
             "Adjust your approach based on this feedback."
         )
 
-    prompt = (
-        "You are an expert Odoo support executor running inside a browser sandbox.\n"
-        "Execute the investigation plan below against the Odoo database and report "
-        "what you observe at each step.\n\n"
-        f"DATABASE URL: {state['base_url']}\n\n"
+    user_prompt = (
+        "You are an expert Odoo support executor running inside a live browser sandbox.\n"
+        "Inspect the attached live screenshot of the current Odoo viewport and execute "
+        "the investigation plan against the real database state.\n\n"
+        f"CURRENT URL: {current_url}\n\n"
         f"TICKET TEXT:\n{state['ticket_text']}\n\n"
-        f"INVESTIGATION PLAN:\n{state['approved_plan']}\n"
+        f"INVESTIGATION PLAN:\n{state['approved_plan']}"
         f"{feedback_section}\n\n"
         "For each step, describe:\n"
         "1. What action was taken\n"
-        "2. What was observed on screen\n"
+        "2. What is actually visible on screen\n"
         "3. Whether the step succeeded or failed\n\n"
         "At the end, summarise your overall findings."
     )
 
-    response = await llm.ainvoke(prompt)
+    # Build a LangChain multimodal message for the Gemini wrapper.
+    if screenshot_b64:
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": f"data:image/png;base64,{screenshot_b64}",
+                },
+            ]
+        )
+    else:
+        message = HumanMessage(content=user_prompt)
+
+    response = await llm.ainvoke([message])
     result_text = response.content if hasattr(response, "content") else str(response)
 
     return {
@@ -237,12 +279,21 @@ class ProjectSaneGraph:
         )
     """
 
-    def __init__(self):
+    def __init__(self, browser_instance=None):
+        """Ingests the live BrowserManager (page + screenshots) for the executor."""
+        self.browser = browser_instance
+
         builder = StateGraph(GraphState)
 
         # Register nodes
         builder.add_node("planner", planner_node)
-        builder.add_node("executor", executor_node)
+
+        # Closure pass-through so the executor node receives the live browser
+        # context. Must be async so LangGraph awaits the node coroutine.
+        async def executor_wrapper(state: GraphState) -> dict:
+            return await executor_node(state, self.browser)
+
+        builder.add_node("executor", executor_wrapper)
         builder.add_node("reviewer", reviewer_node)
 
         # Define edges

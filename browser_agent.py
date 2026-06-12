@@ -44,6 +44,8 @@ class BrowserManager:
         self.browser: Browser = None
         self.context: BrowserContext = None
         self.page: Page = None
+        # Live screenshot history captured by the graph executor node
+        self.screenshots: list = []
 
     # ── Port utilities ─────────────────────────────────────────────────────────
 
@@ -258,12 +260,14 @@ class BrowserManager:
         approved_plan: str,
         gemini_api_key: str,
         job_id: str = "",
-    ) -> str:
+    ) -> dict:
         """
         Run the LangGraph multi-agent state machine (planner → executor → reviewer).
 
-        Instantiates ProjectSaneGraph, invokes the async runtime loop, and
-        returns the final investigation report string.
+        Passes this live BrowserManager (its active Playwright page + screenshot
+        history) into the graph so the executor node can capture real-time
+        screenshots and ground its evaluation in the true sandbox state. Returns
+        the full final graph state dict.
 
         Args:
             base_url:       Active Odoo sandbox URL (already authenticated).
@@ -274,12 +278,13 @@ class BrowserManager:
             job_id:         Unique run identifier for tracing correlation.
 
         Returns:
-            Final report string produced by the reviewer node.
+            Final GraphState dict produced by the reviewer node.
         """
         from graph_agent import ProjectSaneGraph
 
-        graph = ProjectSaneGraph()
-        report = await graph.arun(
+        # Pass 'self' context straight into the state machine constructor
+        graph = ProjectSaneGraph(browser_instance=self)
+        report_context = await graph.arun(
             ticket_text=ticket_text,
             ticket_info=ticket_info,
             base_url=base_url,
@@ -287,4 +292,4 @@ class BrowserManager:
             gemini_api_key=gemini_api_key,
             job_id=job_id,
         )
-        return report
+        return report_context
