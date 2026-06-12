@@ -12,9 +12,12 @@ LangSmith tracing is activated automatically via LANGCHAIN_TRACING_V2 env var.
 
 from __future__ import annotations
 
+import base64
 import os
+import time
 from typing import TypedDict, Optional
 
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 
@@ -88,13 +91,15 @@ async def planner_node(state: GraphState) -> dict:
     }
 
 
-async def executor_node(state: GraphState) -> dict:
+async def executor_node(state: GraphState, browser=None) -> dict:
     """
-    EXECUTOR NODE — Executes tool loops on the Odoo sandbox.
+    EXECUTOR NODE — Inspects the live Odoo sandbox and executes the plan.
 
-    Takes the detailed investigation plan and simulates execution by
-    analysing each step against the sandbox context.  Captures the
-    investigation output as a single result text block.
+    When a live BrowserManager is supplied, the node captures a real-time,
+    full-page screenshot of the active Playwright viewport, records it in the
+    browser's screenshot history, and hands it to Gemini as multimodal context
+    so the evaluation is grounded in the true sandbox state (not a text-only
+    simulation). Falls back to text-only reasoning if no live page is available.
 
     The attempt counter is incremented on each pass to enforce the retry ceiling.
     """
@@ -102,6 +107,29 @@ async def executor_node(state: GraphState) -> dict:
 
     current_attempt = state.get("attempt", 0) + 1
     feedback = state.get("feedback", "")
+
+    # ── Live Visual Evidence Collection (the graph's "Eyes") ──────────────────
+    screenshot_b64 = ""
+    current_url = state["base_url"]
+    if browser is not None and getattr(browser, "page", None) is not None:
+        current_url = browser.page.url or current_url
+        try:
+            os.makedirs("output", exist_ok=True)
+            screenshot_path = (
+                f"output/graph_step_attempt_{current_attempt}_{int(time.time())}.png"
+            )
+            await browser.page.screenshot(path=screenshot_path, full_page=True)
+
+            # Record in the browser manager's screenshot history
+            if getattr(browser, "screenshots", None) is None:
+                browser.screenshots = []
+            if screenshot_path not in browser.screenshots:
+                browser.screenshots.append(screenshot_path)
+
+            with open(screenshot_path, "rb") as f:
+                screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            print(f"[Graph Executor] Live screenshot capture failed: {e}")
 
     feedback_section = ""
     if feedback:
@@ -111,22 +139,36 @@ async def executor_node(state: GraphState) -> dict:
             "Adjust your approach based on this feedback."
         )
 
-    prompt = (
-        "You are an expert Odoo support executor running inside a browser sandbox.\n"
-        "Execute the investigation plan below against the Odoo database and report "
-        "what you observe at each step.\n\n"
-        f"DATABASE URL: {state['base_url']}\n\n"
+    user_prompt = (
+        "You are an expert Odoo support executor running inside a live browser sandbox.\n"
+        "Inspect the attached live screenshot of the current Odoo viewport and execute "
+        "the investigation plan against the real database state.\n\n"
+        f"CURRENT URL: {current_url}\n\n"
         f"TICKET TEXT:\n{state['ticket_text']}\n\n"
-        f"INVESTIGATION PLAN:\n{state['approved_plan']}\n"
+        f"INVESTIGATION PLAN:\n{state['approved_plan']}"
         f"{feedback_section}\n\n"
         "For each step, describe:\n"
         "1. What action was taken\n"
-        "2. What was observed on screen\n"
+        "2. What is actually visible on screen\n"
         "3. Whether the step succeeded or failed\n\n"
         "At the end, summarise your overall findings."
     )
 
-    response = await llm.ainvoke(prompt)
+    # Build a LangChain multimodal message for the Gemini wrapper.
+    if screenshot_b64:
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": f"data:image/png;base64,{screenshot_b64}",
+                },
+            ]
+        )
+    else:
+        message = HumanMessage(content=user_prompt)
+
+    response = await llm.ainvoke([message])
     result_text = response.content if hasattr(response, "content") else str(response)
 
     return {
@@ -181,23 +223,25 @@ async def reviewer_node(state: GraphState) -> dict:
         elif stripped.upper().startswith("FEEDBACK_OR_SUMMARY:"):
             feedback_or_summary = stripped.split(":", 1)[1].strip()
 
-    # Build final report if reproduced or exhausted retries
-    final_report = ""
-    if is_reproduced or state["attempt"] >= state["max_retries"]:
-        final_report = (
-            f"=== Project Sane — Graph Investigation Report ===\n"
-            f"Job ID: {state.get('job_id', 'N/A')}\n"
-            f"Database: {state['base_url']}\n"
-            f"Attempts: {state['attempt']}/{state['max_retries']}\n"
-            f"Reproduced: {'YES' if is_reproduced else 'NO'}\n\n"
-            f"--- Executor Findings ---\n{state['executor_result']}\n\n"
-            f"--- Reviewer Summary ---\n{feedback_or_summary}\n"
-        )
+    # Combined background log signature (raw trace + reviewer summary).
+    # `feedback` carries the polished functional fix steps only, while
+    # `final_report` retains the full machine log for diagnostics.
+    executor_result = state["executor_result"]
+    final_report = (
+        f"=== Project Sane — Graph Investigation Report ===\n"
+        f"Job ID: {state.get('job_id', 'N/A')}\n"
+        f"Database: {state['base_url']}\n"
+        f"Attempts: {state['attempt']}/{state['max_retries']}\n"
+        f"Reproduced: {'YES' if is_reproduced else 'NO'}\n\n"
+        f"--- Executor Findings ---\n{executor_result}\n\n"
+        f"--- Reviewer Summary ---\n{feedback_or_summary}\n"
+    )
 
     return {
         "is_reproduced": is_reproduced,
-        "feedback": feedback_or_summary,
-        "final_report": final_report,
+        "feedback": feedback_or_summary,      # Polished functional fix steps only
+        "executor_result": executor_result,   # Raw console trace log
+        "final_report": final_report,         # Combined log system signature
     }
 
 
@@ -235,12 +279,21 @@ class ProjectSaneGraph:
         )
     """
 
-    def __init__(self):
+    def __init__(self, browser_instance=None):
+        """Ingests the live BrowserManager (page + screenshots) for the executor."""
+        self.browser = browser_instance
+
         builder = StateGraph(GraphState)
 
         # Register nodes
         builder.add_node("planner", planner_node)
-        builder.add_node("executor", executor_node)
+
+        # Closure pass-through so the executor node receives the live browser
+        # context. Must be async so LangGraph awaits the node coroutine.
+        async def executor_wrapper(state: GraphState) -> dict:
+            return await executor_node(state, self.browser)
+
+        builder.add_node("executor", executor_wrapper)
         builder.add_node("reviewer", reviewer_node)
 
         # Define edges
@@ -268,12 +321,14 @@ class ProjectSaneGraph:
         approved_plan: str,
         gemini_api_key: str,
         job_id: str = "",
-    ) -> str:
+    ) -> dict:
         """
         Invoke the compiled state graph asynchronously.
 
         Returns:
-            The final_report string produced by the reviewer node.
+            The full final GraphState dict (feedback, executor_result,
+            final_report, is_reproduced, ...) so callers can map fields
+            independently for the UI summary and the .docx report.
         """
         initial_state: GraphState = {
             "ticket_text": ticket_text,
@@ -290,5 +345,5 @@ class ProjectSaneGraph:
             "final_report": "",
         }
 
-        result = await self._graph.ainvoke(initial_state)
-        return result.get("final_report", "")
+        final_context = await self._graph.ainvoke(initial_state)
+        return final_context
