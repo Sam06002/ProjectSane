@@ -181,23 +181,25 @@ async def reviewer_node(state: GraphState) -> dict:
         elif stripped.upper().startswith("FEEDBACK_OR_SUMMARY:"):
             feedback_or_summary = stripped.split(":", 1)[1].strip()
 
-    # Build final report if reproduced or exhausted retries
-    final_report = ""
-    if is_reproduced or state["attempt"] >= state["max_retries"]:
-        final_report = (
-            f"=== Project Sane — Graph Investigation Report ===\n"
-            f"Job ID: {state.get('job_id', 'N/A')}\n"
-            f"Database: {state['base_url']}\n"
-            f"Attempts: {state['attempt']}/{state['max_retries']}\n"
-            f"Reproduced: {'YES' if is_reproduced else 'NO'}\n\n"
-            f"--- Executor Findings ---\n{state['executor_result']}\n\n"
-            f"--- Reviewer Summary ---\n{feedback_or_summary}\n"
-        )
+    # Combined background log signature (raw trace + reviewer summary).
+    # `feedback` carries the polished functional fix steps only, while
+    # `final_report` retains the full machine log for diagnostics.
+    executor_result = state["executor_result"]
+    final_report = (
+        f"=== Project Sane — Graph Investigation Report ===\n"
+        f"Job ID: {state.get('job_id', 'N/A')}\n"
+        f"Database: {state['base_url']}\n"
+        f"Attempts: {state['attempt']}/{state['max_retries']}\n"
+        f"Reproduced: {'YES' if is_reproduced else 'NO'}\n\n"
+        f"--- Executor Findings ---\n{executor_result}\n\n"
+        f"--- Reviewer Summary ---\n{feedback_or_summary}\n"
+    )
 
     return {
         "is_reproduced": is_reproduced,
-        "feedback": feedback_or_summary,
-        "final_report": final_report,
+        "feedback": feedback_or_summary,      # Polished functional fix steps only
+        "executor_result": executor_result,   # Raw console trace log
+        "final_report": final_report,         # Combined log system signature
     }
 
 
@@ -268,12 +270,14 @@ class ProjectSaneGraph:
         approved_plan: str,
         gemini_api_key: str,
         job_id: str = "",
-    ) -> str:
+    ) -> dict:
         """
         Invoke the compiled state graph asynchronously.
 
         Returns:
-            The final_report string produced by the reviewer node.
+            The full final GraphState dict (feedback, executor_result,
+            final_report, is_reproduced, ...) so callers can map fields
+            independently for the UI summary and the .docx report.
         """
         initial_state: GraphState = {
             "ticket_text": ticket_text,
@@ -290,5 +294,5 @@ class ProjectSaneGraph:
             "final_report": "",
         }
 
-        result = await self._graph.ainvoke(initial_state)
-        return result.get("final_report", "")
+        final_context = await self._graph.ainvoke(initial_state)
+        return final_context

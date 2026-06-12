@@ -827,9 +827,9 @@ async def run_pipeline(request: Request):
         async for msg in flush_monitor():
             yield msg
 
-        graph_report = ""
+        graph_context = {}
         try:
-            graph_report = await browser_manager.investigate_with_graph(
+            graph_context = await browser_manager.investigate_with_graph(
                 base_url=db_url,
                 ticket_text=ticket_text,
                 ticket_info=ticket_info,
@@ -849,7 +849,7 @@ async def run_pipeline(request: Request):
 
         yield StreamManager.emit_thinking(
             0, "Graph Complete",
-            "LangGraph state machine finished — assembling final report."
+            "LangGraph state machine finished — compiling reports and cleaning sessions."
         )
         await obs.record_event("Graph Complete", "LangGraph state machine finished")
         async for msg in flush_monitor():
@@ -861,19 +861,36 @@ async def run_pipeline(request: Request):
         monitor_summary = obs.finalise()
         log_path = run_log.save()
 
+        # Extract tokenized fields from the graph state context
+        clean_resolution = graph_context.get("feedback") or "Graph execution produced no clean resolution guide."
+        raw_execution_findings = graph_context.get("final_report") or "No background execution log generated."
+        error_is_reproduced = graph_context.get("is_reproduced", False)
+
+        # Restore automated Word generation — write the .docx report to disk
+        from doc_writer import generate_report
+        generated_report_docx = generate_report(
+            ticket_text=ticket_text,
+            ticket_info=ticket_info,
+            db_findings=raw_execution_findings,   # technical console log trace
+            runbot_findings="",
+            resolution=clean_resolution,          # polished functional fix steps
+            screenshots=browser_manager.screenshots if hasattr(browser_manager, "screenshots") else [],
+        )
+
         report = {
             "ticket_summary": plan.summary,
             "module": plan.module,
             "confidence": plan.confidence,
             "steps_total": len(plan.steps),
-            "steps_succeeded": 0,
+            "steps_succeeded": len(plan.steps) if error_is_reproduced else 0,
             "steps_failed": 0,
             "was_executed": True,
             "skip_reason": None,
             "results": [],
-            "findings": [graph_report] if graph_report else [],
-            "recommendation": graph_report or "Graph execution produced no report.",
+            "findings": [clean_resolution],       # clean guide for the user container
+            "recommendation": clean_resolution,   # renders in .recommendation-box
             "log_path": log_path,
+            "report_path": generated_report_docx,  # restores download/export
             "monitor_summary": monitor_summary,
         }
 
