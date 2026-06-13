@@ -20,6 +20,7 @@ from typing import TypedDict, Optional
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
+import memory_store
 
 
 # ── State Schema ──────────────────────────────────────────────────────────────
@@ -70,6 +71,26 @@ async def planner_node(state: GraphState) -> dict:
     """
     llm = _build_llm(state["gemini_api_key"])
 
+    # --- Fetch historical resolution and routing patterns ---
+    odoo_module = state["ticket_info"].get("module", "")
+    error_message = state["ticket_info"].get("summary", "")
+    try:
+        similar_resolutions = memory_store.search_similar_resolutions(odoo_module, error_message)
+        nav_patterns = memory_store.get_all_navigation_patterns()
+        
+        memory_context = ""
+        if similar_resolutions:
+            memory_context += "PAST SIMILAR RESOLUTIONS (Use these to guide your plan):\n"
+            for res in similar_resolutions:
+                memory_context += f"- Ticket: {res['ticket_summary']}\n  Root Cause: {res['root_cause']}\n  Fix: {res['resolution_steps']}\n"
+        if nav_patterns:
+            memory_context += "\nKNOWN NAVIGATION PATTERNS:\n"
+            for pat in nav_patterns:
+                memory_context += f"- {pat['pattern_name']}: {pat['url_structure']}\n"
+    except Exception as e:
+        print(f"[Graph Memory] Failed to fetch memory context: {e}")
+        memory_context = ""
+
     prompt = (
         "You are an expert Odoo functional support analyst.\n"
         "Given the following support ticket and an approved high-level plan, "
@@ -79,6 +100,7 @@ async def planner_node(state: GraphState) -> dict:
         f"TICKET TEXT:\n{state['ticket_text']}\n\n"
         f"TICKET METADATA:\n{state['ticket_info']}\n\n"
         f"APPROVED HIGH-LEVEL PLAN:\n{state['approved_plan']}\n\n"
+        f"{memory_context}\n"
         "Output a numbered list of concrete browser actions (max 10 steps). "
         "Each step must be a single, unambiguous action."
     )
@@ -264,6 +286,32 @@ async def reviewer_node(state: GraphState) -> dict:
                 f"**Root Cause:** Could not determine root cause due to error: {e}\n"
                 f"**The Fix:**\n- Manual verification required."
             )
+
+        # --- Save Verified Resolution to Memory ---
+        try:
+            root_cause = "Unknown root cause"
+            resolution_steps = []
+            for line in final_findings.splitlines():
+                if line.startswith("**Root Cause:**"):
+                    root_cause = line.replace("**Root Cause:**", "").strip()
+                elif line.startswith("- "):
+                    resolution_steps.append(line[2:].strip())
+
+            odoo_module = state["ticket_info"].get("module", "Unknown")
+            ticket_summary = state["ticket_info"].get("summary", "Unknown")
+            odoo_version = state["ticket_info"].get("version", "Unknown")
+            error_msg_short = state["ticket_text"][:250]
+            
+            memory_store.save_resolution(
+                ticket_summary=ticket_summary,
+                odoo_module=odoo_module,
+                odoo_version=odoo_version,
+                error_message=error_msg_short,
+                root_cause=root_cause,
+                resolution_steps=resolution_steps
+            )
+        except Exception as e:
+            print(f"[Graph Memory] Failed to save resolution: {e}")
 
     return {
         "is_reproduced": is_reproduced,
