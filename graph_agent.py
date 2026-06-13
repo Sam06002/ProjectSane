@@ -17,12 +17,13 @@ import os
 import time
 from typing import TypedDict, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 import memory_store
 import nest_asyncio
 nest_asyncio.apply()  # allows run_until_complete inside a running event loop (thread safety)
+from langchain_agent import create_langchain_tools
 
 
 # ── State Schema ──────────────────────────────────────────────────────────────
@@ -120,44 +121,15 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     """
     EXECUTOR NODE — Inspects the live Odoo sandbox and executes the plan.
 
-    When a live BrowserManager is supplied, the node captures a real-time,
-    full-page screenshot of the active Playwright viewport, records it in the
-    browser's screenshot history, and hands it to Gemini as multimodal context
-    so the evaluation is grounded in the true sandbox state (not a text-only
-    simulation). Falls back to text-only reasoning if no live page is available.
-
-    The attempt counter is incremented on each pass to enforce the retry ceiling.
+    When a live BrowserManager is supplied, this node dynamically calls
+    browser tools (using LangChain bind_tools) to navigate, click, type, and
+    inspect the sandbox page. After each action, it automatically takes a
+    screenshot and feeds it back to the agent as multimodal context.
     """
     llm = _build_llm(state["gemini_api_key"])
 
     current_attempt = state.get("attempt", 0) + 1
     feedback = state.get("feedback", "")
-
-    # ── Live Visual Evidence Collection (the graph's "Eyes") ──────────────────
-    screenshot_b64 = ""
-    current_url = state["base_url"]
-    if browser is not None and getattr(browser, "page", None) is not None:
-        current_url = browser.page.url or current_url
-        try:
-            os.makedirs("output", exist_ok=True)
-            screenshot_path = (
-                f"output/graph_step_attempt_{current_attempt}_{int(time.time())}.png"
-            )
-            await browser.page.screenshot(path=screenshot_path, full_page=True)
-
-            # Record in the browser manager's screenshot history
-            if getattr(browser, "screenshots", None) is None:
-                browser.screenshots = []
-            if screenshot_path not in browser.screenshots:
-                browser.screenshots.append(screenshot_path)
-
-            with open(screenshot_path, "rb") as f:
-                screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
-        except Exception as e:
-            import traceback
-            error_detail = traceback.format_exc()
-            print(f"[EXECUTOR ERROR] Live screenshot capture failed: {e}")
-            print(error_detail)
 
     feedback_section = ""
     if feedback:
@@ -167,24 +139,73 @@ async def executor_node(state: GraphState, browser=None) -> dict:
             "Adjust your approach based on this feedback."
         )
 
+    # ── Fallback if browser is not available ──────────────────────────────────
+    if browser is None or getattr(browser, "page", None) is None:
+        print("[EXECUTOR] Running fallback text-only execution (no browser page available)")
+        current_url = state["base_url"]
+        user_prompt = (
+            "You are an expert Odoo support executor running in a fallback text-only environment.\n"
+            "Given the plan, describe how you would investigate this ticket.\n\n"
+            f"CURRENT URL: {current_url}\n\n"
+            f"TICKET TEXT:\n{state['ticket_text']}\n\n"
+            f"INVESTIGATION PLAN:\n{state['approved_plan']}"
+            f"{feedback_section}\n\n"
+            "Describe what actions you would take and summarize your findings."
+        )
+        message = HumanMessage(content=user_prompt)
+        try:
+            response = await llm.ainvoke([message])
+            result_text = response.content if hasattr(response, "content") else str(response)
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            result_text = f"Executor failed: {e}\n\nDetail:\n{error_detail}"
+        
+        return {
+            "executor_result": result_text,
+            "attempt": current_attempt,
+        }
+
+    # ── ReAct Tool-Calling Agent Loop ─────────────────────────────────────────
+    tools = create_langchain_tools(browser.page, browser, state["base_url"])
+    llm_with_tools = llm.bind_tools(tools)
+
+    current_url = browser.page.url or state["base_url"]
+    screenshot_b64 = ""
+    try:
+        os.makedirs("output", exist_ok=True)
+        screenshot_path = f"output/graph_step_attempt_{current_attempt}_start_{int(time.time())}.png"
+        await browser.page.screenshot(path=screenshot_path, full_page=True)
+        if getattr(browser, "screenshots", None) is None:
+            browser.screenshots = []
+        if screenshot_path not in browser.screenshots:
+            browser.screenshots.append(screenshot_path)
+        with open(screenshot_path, "rb") as f:
+            screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        print(f"[EXECUTOR ERROR] Live initial screenshot capture failed: {e}")
+
     user_prompt = (
         "You are an expert Odoo support executor running inside a live browser sandbox.\n"
-        "Inspect the attached live screenshot of the current Odoo viewport and execute "
+        "You have access to browser tools to navigate, click, type, and inspect the Odoo database.\n"
+        "Inspect the attached initial screenshot of the current Odoo viewport and execute "
         "the investigation plan against the real database state.\n\n"
+        "Your goal is to investigate, reproduce, and locate the error reported in the ticket.\n"
+        "Follow these rules:\n"
+        "1. Execute the plan step-by-step using the available tools.\n"
+        "2. Call tools as needed. After each action-taking tool (navigate_to_url, click_element, type_into_field), a new screenshot of the page will be automatically captured and fed back to you as visual context.\n"
+        "3. Avoid guessing or hallucinating database content. Use the tools to check everything.\n"
+        "4. If you hit an error, try to diagnose its cause.\n"
+        "5. Once you have completed your investigation or successfully reproduced the issue, output your final findings and stop calling tools. If you are finished, DO NOT call any more tools.\n\n"
         f"CURRENT URL: {current_url}\n\n"
         f"TICKET TEXT:\n{state['ticket_text']}\n\n"
         f"INVESTIGATION PLAN:\n{state['approved_plan']}"
-        f"{feedback_section}\n\n"
-        "For each step, describe:\n"
-        "1. What action was taken\n"
-        "2. What is actually visible on screen\n"
-        "3. Whether the step succeeded or failed\n\n"
-        "At the end, summarise your overall findings."
+        f"{feedback_section}"
     )
 
-    # Build a LangChain multimodal message for the Gemini wrapper.
+    messages = []
     if screenshot_b64:
-        message = HumanMessage(
+        messages.append(HumanMessage(
             content=[
                 {"type": "text", "text": user_prompt},
                 {
@@ -192,19 +213,112 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                     "image_url": f"data:image/png;base64,{screenshot_b64}",
                 },
             ]
-        )
+        ))
     else:
-        message = HumanMessage(content=user_prompt)
+        messages.append(HumanMessage(content=user_prompt))
 
-    try:
-        response = await llm.ainvoke([message])
-        result_text = response.content if hasattr(response, "content") else str(response)
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print(f"[EXECUTOR ERROR] LLM invocation failed: {e}")
-        print(error_detail)
-        result_text = f"Executor failed: {e}\n\nDetail:\n{error_detail}"
+    max_tool_calls = 15
+    tool_calls_count = 0
+    execution_log = []
+    tool_map = {t.name: t for t in tools}
+
+    response = None
+    while tool_calls_count < max_tool_calls:
+        try:
+            response = await llm_with_tools.ainvoke(messages)
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"[EXECUTOR ERROR] LLM invocation failed: {e}")
+            print(error_detail)
+            execution_log.append(f"LLM Error: {e}")
+            break
+
+        messages.append(response)
+
+        if response.tool_calls:
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                tool_call_id = tool_call["id"]
+
+                tool_calls_count += 1
+                if tool_calls_count > max_tool_calls:
+                    print(f"[REACT LOOP] Tool call limit reached ({max_tool_calls}). Stopping.")
+                    execution_log.append(f"Reached safety limit of {max_tool_calls} tool calls.")
+                    break
+
+                print(f"[REACT LOOP] Calling tool: {tool_name} with args {tool_args}")
+                
+                # Execute tool
+                if tool_name in tool_map:
+                    try:
+                        tool_obj = tool_map[tool_name]
+                        result = await tool_obj.ainvoke(tool_args)
+                        log_entry = f"Tool Call {tool_calls_count}: {tool_name}({tool_args}) -> {result}"
+                        print(f"[REACT LOOP] Tool result: {result}")
+                    except Exception as e:
+                        import traceback
+                        result = f"Error executing tool {tool_name}: {e}"
+                        print(f"[REACT LOOP ERROR] {result}\n{traceback.format_exc()}")
+                        log_entry = f"Tool Call {tool_calls_count}: {tool_name}({tool_args}) -> Error: {e}"
+                else:
+                    result = f"Error: Tool {tool_name} not found."
+                    log_entry = f"Tool Call {tool_calls_count}: {tool_name}({tool_args}) -> {result}"
+                    print(f"[REACT LOOP ERROR] {result}")
+
+                execution_log.append(log_entry)
+
+                # Auto-screenshot after execution
+                screenshot_b64_next = ""
+                try:
+                    screenshot_path = f"output/graph_step_attempt_{current_attempt}_tool_{tool_calls_count}_{int(time.time())}.png"
+                    await browser.page.screenshot(path=screenshot_path, full_page=True)
+                    if getattr(browser, "screenshots", None) is None:
+                        browser.screenshots = []
+                    if screenshot_path not in browser.screenshots:
+                        browser.screenshots.append(screenshot_path)
+                    with open(screenshot_path, "rb") as f:
+                        screenshot_b64_next = base64.b64encode(f.read()).decode("utf-8")
+                except Exception as e:
+                    print(f"[EXECUTOR ERROR] Post-tool screenshot capture failed: {e}")
+
+                # Append tool result to messages
+                tool_message = ToolMessage(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    content=f"Result: {result}"
+                )
+                messages.append(tool_message)
+
+                # Append new screenshot if successfully captured
+                if screenshot_b64_next:
+                    screenshot_feedback_msg = HumanMessage(
+                        content=[
+                            {"type": "text", "text": f"Here is the screenshot of the browser viewport after executing tool '{tool_name}':"},
+                            {
+                                "type": "image_url",
+                                "image_url": f"data:image/png;base64,{screenshot_b64_next}",
+                            },
+                        ]
+                    )
+                    messages.append(screenshot_feedback_msg)
+
+            # Continue the loop
+            continue
+        else:
+            # No tool calls: model has finished and returned text
+            break
+
+    # Construct the final result text
+    final_text = response.content if (response and hasattr(response, "content")) else ""
+    log_summary = "\n".join(execution_log)
+    result_text = (
+        f"=== TOOL EXECUTION LOG ===\n"
+        f"{log_summary}\n\n"
+        f"=== FINAL INVESTIGATION REPORT ===\n"
+        f"{final_text}"
+    )
 
     return {
         "executor_result": result_text,
