@@ -14,3 +14,4 @@ openai>=1.0.0                # Retained for Planner (LM Studio / OpenAI-compat)
 langgraph>=0.1.0              # State graph orchestration
 langsmith>=0.1.0              # Runtime execution tracing
 langchain-google-genai>=2.1.0 # LangChain wrapper for Gemini (graph node LLM)
+nest_asyncio>=1.6.0           # Async bridge: allows run_until_complete inside running event loop

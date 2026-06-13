@@ -21,6 +21,8 @@ from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 import memory_store
+import nest_asyncio
+nest_asyncio.apply()  # allows run_until_complete inside a running event loop (thread safety)
 
 
 # ── State Schema ──────────────────────────────────────────────────────────────
@@ -152,7 +154,10 @@ async def executor_node(state: GraphState, browser=None) -> dict:
             with open(screenshot_path, "rb") as f:
                 screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
         except Exception as e:
-            print(f"[Graph Executor] Live screenshot capture failed: {e}")
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"[EXECUTOR ERROR] Live screenshot capture failed: {e}")
+            print(error_detail)
 
     feedback_section = ""
     if feedback:
@@ -191,8 +196,15 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     else:
         message = HumanMessage(content=user_prompt)
 
-    response = await llm.ainvoke([message])
-    result_text = response.content if hasattr(response, "content") else str(response)
+    try:
+        response = await llm.ainvoke([message])
+        result_text = response.content if hasattr(response, "content") else str(response)
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[EXECUTOR ERROR] LLM invocation failed: {e}")
+        print(error_detail)
+        result_text = f"Executor failed: {e}\n\nDetail:\n{error_detail}"
 
     return {
         "executor_result": result_text,
