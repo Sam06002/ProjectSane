@@ -544,6 +544,59 @@
         }
         .empty-state { color: var(--muted); font-size: 12px; text-align: center; margin-top: 60px; }
 
+        /* ── Final Draft Card ────────────────────────────────────────────── */
+        .final-draft-card {
+            display: none;
+            margin: 12px 16px 6px;
+            padding: 16px 18px;
+            border-radius: 10px;
+            border: 1.5px solid rgba(16, 185, 129, 0.35);
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, rgba(99, 102, 241, 0.04) 100%);
+            position: relative;
+            overflow: hidden;
+            animation: draftSlideIn 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .final-draft-card.visible { display: block; }
+        @keyframes draftSlideIn {
+            from { opacity: 0; transform: translateY(-12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .final-draft-card::before {
+            content: '';
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 3px;
+            background: linear-gradient(90deg, var(--green), var(--indigo));
+            border-radius: 10px 10px 0 0;
+        }
+        .draft-card-header {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 10px;
+        }
+        .draft-card-badge {
+            font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.6px; color: var(--green);
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            padding: 3px 9px; border-radius: 99px;
+        }
+        .draft-card-title {
+            font-size: 12px; font-weight: 700; color: var(--text);
+        }
+        .draft-card-body {
+            font-size: 12.5px; line-height: 1.65; color: var(--muted2);
+        }
+        .draft-card-body strong { color: var(--text); font-weight: 600; }
+        .draft-card-body ul {
+            list-style: none; padding-left: 0; margin: 4px 0 0;
+        }
+        .draft-card-body ul li {
+            position: relative; padding-left: 14px; margin-bottom: 3px;
+        }
+        .draft-card-body ul li::before {
+            content: '›'; position: absolute; left: 0; color: var(--green);
+            font-weight: 700; font-size: 14px; line-height: 1.5;
+        }
+
         /* ── Toast ───────────────────────────────────────────────────────── */
         .toast {
             position: fixed; bottom: 24px; right: 24px;
@@ -595,6 +648,14 @@
                     <textarea id="ticket">User cannot save the new contact. A warning appears saying 'Email is required' but there is no email field visible.</textarea>
                 </div>
                 <button class="run-btn" id="runBtn" onclick="runPipeline()">⚡ Execute Pipeline</button>
+            </div>
+            <!-- Final Draft Card — high-visibility summary above logs -->
+            <div class="final-draft-card" id="finalDraftCard">
+                <div class="draft-card-header">
+                    <span class="draft-card-badge">✓ Resolution Draft</span>
+                    <span class="draft-card-title">Final Concise Summary</span>
+                </div>
+                <div class="draft-card-body" id="finalDraftBody"></div>
             </div>
             <div class="stream-container" id="stream-container">
                 <div class="stream-placeholder">
@@ -817,10 +878,51 @@ function addStreamCard(cls, header, title, detail, stepNum) {
     return el;
 }
 
+// ── Markdown parser for draft card ─────────────────────────────────────────────
+function parseDraftMarkdown(text) {
+    if (!text) return '';
+    // Split into lines and process
+    const lines = text.split('\n');
+    let html = '';
+    let inList = false;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            if (inList) { html += '</ul>'; inList = false; }
+            continue;
+        }
+        // Bullet items
+        if (trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            let content = trimmed.slice(2);
+            // Bold markers
+            content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html += `<li>${content}</li>`;
+        } else {
+            if (inList) { html += '</ul>'; inList = false; }
+            // Bold markers in regular lines
+            let content = trimmed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html += `<p style="margin:0 0 4px">${content}</p>`;
+        }
+    }
+    if (inList) html += '</ul>';
+    return html;
+}
+
 // ── Pipeline SSE handler ───────────────────────────────────────────────────────
 function handlePipelineEvent(eventType, data) {
     if (eventType === 'thinking_step') {
         addStreamCard('thinking', `Thinking${data.step_id > 0 ? ` · Step ${data.step_id}` : ''}`, data.intent, data.reasoning, data.step_id);
+
+        // Check if this thinking_step carries a simple_draft (Graph Complete event)
+        if (data.intent === 'Graph Complete' && data.simple_draft) {
+            const card = document.getElementById('finalDraftCard');
+            const body = document.getElementById('finalDraftBody');
+            body.innerHTML = parseDraftMarkdown(data.simple_draft);
+            card.classList.add('visible');
+            // Smoothly scroll the draft card into view
+            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     } else if (eventType === 'action_start') {
         addStreamCard('action', `Executing · Step ${data.step_id}`, `${data.action} → ${data.target}`, '', undefined);
     } else if (eventType === 'action_result') {
@@ -834,6 +936,13 @@ function handlePipelineEvent(eventType, data) {
     } else if (eventType === 'error') {
         addStreamCard('error', 'SYSTEM ERROR', data.message, '', undefined);
     } else if (eventType === 'final_summary') {
+        // Also populate the draft card from the final_summary if it has simple_draft
+        if (data.simple_draft) {
+            const card = document.getElementById('finalDraftCard');
+            const body = document.getElementById('finalDraftBody');
+            body.innerHTML = parseDraftMarkdown(data.simple_draft);
+            card.classList.add('visible');
+        }
         renderDraftReport(data);
     }
 }
@@ -1039,6 +1148,10 @@ async function runPipeline() {
     document.getElementById('reportBadge').style.cssText = '';
 
     document.getElementById('stream-container').innerHTML = '';
+
+    // Reset the final draft card
+    document.getElementById('finalDraftCard').classList.remove('visible');
+    document.getElementById('finalDraftBody').innerHTML = '';
 
     // Activate indicators
     document.getElementById('liveDot').classList.add('active');

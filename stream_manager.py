@@ -13,12 +13,14 @@ class StreamManager:
         return f"event: {event_type}\ndata: {payload}\n\n"
 
     @staticmethod
-    def emit_thinking(step_id: int, intent: str, reasoning: str) -> str:
-        return StreamManager.format_sse("thinking_step", {
+    def emit_thinking(step_id: int, intent: str, reasoning: str, **kwargs) -> str:
+        data = {
             "step_id": step_id,
             "intent": intent,
             "reasoning": reasoning
-        })
+        }
+        data.update(kwargs)
+        return StreamManager.format_sse("thinking_step", data)
 
     @staticmethod
     def emit_action_start(step_id: int, action_type: str, target: str) -> str:

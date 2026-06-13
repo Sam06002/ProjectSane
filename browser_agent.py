@@ -293,3 +293,4 @@ class BrowserManager:
             job_id=job_id,
         )
         return report_context
+

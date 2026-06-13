@@ -847,9 +847,12 @@ async def run_pipeline(request: Request):
             await browser_manager.stop()
             return
 
+        graph_findings = graph_context.get("final_findings", "") if isinstance(graph_context, dict) else ""
+
         yield StreamManager.emit_thinking(
             0, "Graph Complete",
-            "LangGraph state machine finished — compiling reports and cleaning sessions."
+            "LangGraph state machine finished — compiling reports and cleaning sessions.",
+            simple_draft=graph_findings,
         )
         await obs.record_event("Graph Complete", "LangGraph state machine finished")
         async for msg in flush_monitor():
@@ -889,6 +892,7 @@ async def run_pipeline(request: Request):
             "results": [],
             "findings": [clean_resolution],       # clean guide for the user container
             "recommendation": clean_resolution,   # renders in .recommendation-box
+            "simple_draft": graph_findings,
             "log_path": log_path,
             "report_path": generated_report_docx,  # restores download/export
             "monitor_summary": monitor_summary,

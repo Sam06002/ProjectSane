@@ -42,6 +42,7 @@ class GraphState(TypedDict):
     is_reproduced: bool
     feedback: str
     final_report: str
+    final_findings: str
 
 
 # ── Helper: build the LLM instance used by all nodes ─────────────────────────
@@ -237,11 +238,39 @@ async def reviewer_node(state: GraphState) -> dict:
         f"--- Reviewer Summary ---\n{feedback_or_summary}\n"
     )
 
+    final_findings = ""
+    if is_reproduced or state["attempt"] >= state["max_retries"]:
+        # Generate clean final_findings using LLM in standard format
+        findings_prompt = (
+            "You are an expert Odoo support analyst. Synthesize a clean, concise resolution summary "
+            "from the following ticket and investigation results.\n\n"
+            f"ORIGINAL TICKET:\n{state['ticket_text']}\n\n"
+            f"INVESTIGATION RESULTS:\n{executor_result}\n\n"
+            "Output EXACTLY in this format with no other text, headers, code blocks, or markdown formatting outside this template:\n"
+            "**Request Summary:** [1-sentence distillation of what the customer wanted]\n"
+            "**Root Cause:** [Clear explanation of why it was not working]\n"
+            "**The Fix:**\n"
+            "- [First step to solve the issue]\n"
+            "- [Second step to solve the issue]\n\n"
+            "Ensure you strip away any dynamic code, raw JSON schemas, or token metrics."
+        )
+        try:
+            findings_response = await llm.ainvoke(findings_prompt)
+            final_findings = findings_response.content if hasattr(findings_response, "content") else str(findings_response)
+            final_findings = final_findings.strip()
+        except Exception as e:
+            final_findings = (
+                f"**Request Summary:** Investigation complete.\n"
+                f"**Root Cause:** Could not determine root cause due to error: {e}\n"
+                f"**The Fix:**\n- Manual verification required."
+            )
+
     return {
         "is_reproduced": is_reproduced,
         "feedback": feedback_or_summary,      # Polished functional fix steps only
         "executor_result": executor_result,   # Raw console trace log
         "final_report": final_report,         # Combined log system signature
+        "final_findings": final_findings,     # Clean summary findings for draft card
     }
 
 
@@ -327,7 +356,7 @@ class ProjectSaneGraph:
 
         Returns:
             The full final GraphState dict (feedback, executor_result,
-            final_report, is_reproduced, ...) so callers can map fields
+            final_report, is_reproduced, final_findings, ...) so callers can map fields
             independently for the UI summary and the .docx report.
         """
         initial_state: GraphState = {
@@ -343,6 +372,7 @@ class ProjectSaneGraph:
             "is_reproduced": False,
             "feedback": "",
             "final_report": "",
+            "final_findings": "",
         }
 
         final_context = await self._graph.ainvoke(initial_state)
