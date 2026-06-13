@@ -37,3 +37,7 @@ test_prof/
 
 # PDF workflow documents (potentially sensitive)
 *.pdf
+
+# Runtime logs and SQLite memory database
+logs/
+*.db
