@@ -19,11 +19,13 @@ from typing import TypedDict, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 import memory_store
 import nest_asyncio
 nest_asyncio.apply()  # allows run_until_complete inside a running event loop (thread safety)
 from langchain_agent import create_langchain_tools
+import sys
 
 
 # ── State Schema ──────────────────────────────────────────────────────────────
@@ -60,6 +62,57 @@ def _build_llm(api_key: str) -> ChatGoogleGenerativeAI:
     )
 
 
+async def safe_llm_invoke(prompt_payload, gemini_api_key: str, tools: list = None):
+    """
+    Executes a primary ainvoke call to native Gemini. 
+    Intercepts 429 errors to run a seamless failover to OpenRouter.
+    """
+    # 1. Primary Attempt: Native Google GenAI Channel
+    try:
+        primary_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=gemini_api_key,
+            temperature=0.1,
+        )
+        if tools:
+            primary_llm = primary_llm.bind_tools(tools)
+        return await primary_llm.ainvoke(prompt_payload)
+        
+    except Exception as e:
+        error_msg = str(e)
+        # Check explicitly for standard Gemini API quota limit signatures
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            print("\n[SYSTEM WARN] Quota Exhausted on Primary Channel. Initiating OpenRouter Failover Core...")
+            sys.stdout.flush()
+            
+            openrouter_key = os.getenv("OPENROUTER_API_KEY")
+            openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+            
+            if not openrouter_key:
+                print("[SYSTEM ERROR] OpenRouter failover aborted: OPENROUTER_API_KEY is missing from environment.")
+                sys.stdout.flush()
+                raise e
+                
+            # Initialize the OpenAI-compatible OpenRouter interface client
+            fallback_llm = ChatOpenAI(
+                model=openrouter_model,
+                openai_api_key=openrouter_key,
+                openai_api_base="https://openrouter.ai/api/v1",
+                temperature=0.1,
+                default_headers={
+                    "HTTP-Referer": "http://localhost:8000",
+                    "X-Title": "Project Sane v3 Support Agent Core",
+                }
+            )
+            if tools:
+                fallback_llm = fallback_llm.bind_tools(tools)
+            return await fallback_llm.ainvoke(prompt_payload)
+            
+        # Re-raise error if it's a completely different non-quota runtime exception
+        raise e
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NODE FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -72,8 +125,6 @@ async def planner_node(state: GraphState) -> dict:
     high-level plan from Engine 1 (Groq).  Produces a detailed, step-by-step
     investigation plan grounded in the Odoo sandbox URL.
     """
-    llm = _build_llm(state["gemini_api_key"])
-
     # --- Fetch historical resolution and routing patterns ---
     odoo_module = state["ticket_info"].get("module", "")
     error_message = state["ticket_info"].get("summary", "")
@@ -108,7 +159,7 @@ async def planner_node(state: GraphState) -> dict:
         "Each step must be a single, unambiguous action."
     )
 
-    response = await llm.ainvoke(prompt)
+    response = await safe_llm_invoke(prompt, state["gemini_api_key"])
     plan_text = response.content if hasattr(response, "content") else str(response)
 
     return {
@@ -126,8 +177,6 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     inspect the sandbox page. After each action, it automatically takes a
     screenshot and feeds it back to the agent as multimodal context.
     """
-    llm = _build_llm(state["gemini_api_key"])
-
     current_attempt = state.get("attempt", 0) + 1
     feedback = state.get("feedback", "")
 
@@ -154,7 +203,7 @@ async def executor_node(state: GraphState, browser=None) -> dict:
         )
         message = HumanMessage(content=user_prompt)
         try:
-            response = await llm.ainvoke([message])
+            response = await safe_llm_invoke([message], state["gemini_api_key"])
             result_text = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             import traceback
@@ -168,7 +217,6 @@ async def executor_node(state: GraphState, browser=None) -> dict:
 
     # ── ReAct Tool-Calling Agent Loop ─────────────────────────────────────────
     tools = create_langchain_tools(browser.page, browser, state["base_url"])
-    llm_with_tools = llm.bind_tools(tools)
 
     current_url = browser.page.url or state["base_url"]
     screenshot_b64 = ""
@@ -225,7 +273,7 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     response = None
     while tool_calls_count < max_tool_calls:
         try:
-            response = await llm_with_tools.ainvoke(messages)
+            response = await safe_llm_invoke(messages, state["gemini_api_key"], tools=tools)
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
@@ -338,8 +386,6 @@ async def reviewer_node(state: GraphState) -> dict:
         REPRODUCED: YES/NO
         FEEDBACK_OR_SUMMARY: [Content Block]
     """
-    llm = _build_llm(state["gemini_api_key"])
-
     prompt = (
         "You are a senior Odoo QA reviewer.\n"
         "Analyze the executor's investigation results below and determine "
@@ -357,7 +403,7 @@ async def reviewer_node(state: GraphState) -> dict:
         "was observed in the executor results."
     )
 
-    response = await llm.ainvoke(prompt)
+    response = await safe_llm_invoke(prompt, state["gemini_api_key"])
     review_text = response.content if hasattr(response, "content") else str(response)
 
     # ── Parse the structured response ─────────────────────────────────────────
@@ -403,7 +449,7 @@ async def reviewer_node(state: GraphState) -> dict:
             "Ensure you strip away any dynamic code, raw JSON schemas, or token metrics."
         )
         try:
-            findings_response = await llm.ainvoke(findings_prompt)
+            findings_response = await safe_llm_invoke(findings_prompt, state["gemini_api_key"])
             final_findings = findings_response.content if hasattr(findings_response, "content") else str(findings_response)
             final_findings = final_findings.strip()
         except Exception as e:
