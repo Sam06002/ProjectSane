@@ -16,6 +16,8 @@ from exceptions import (
     DuplicationError
 )
 import odoo_selectors as selectors
+from browser_agent import ensure_demo_overlay, human_like_click_locator, human_like_fill
+from demo_mode import demo_settings
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +131,9 @@ class JobManager:
             # Isolated context launch
             try:
                 run_context = await browser_manager.create_run_context()
+                run_context.sse_emitter = _sse_emitter
                 await obs.record_event("Browser ready", "Isolated run browser context created")
+                await obs.record_event("Demo mode", f"Observable automation settings: {demo_settings()}")
             except Exception as e:
                 raise BrowserError(f"Failed to create isolated browser: {e}", "browser_start")
 
@@ -146,12 +150,15 @@ class JobManager:
                 if "/support/login" in page_obj.url:
                     await job.emit_raw(StreamManager.emit_thinking(0, "Authentication", "Submitting support reason..."))
                     reason_input = None
+                    reason_selector = None
                     for sel in selectors.get_selector("reason_input"):
                         if await page_obj.locator(sel).count() > 0:
                             reason_input = page_obj.locator(sel).first
+                            reason_selector = sel
                             break
                     if reason_input:
-                        await reason_input.fill("testing")
+                        await job.emit_raw(StreamManager.emit_demo_thought("Entering support reason"))
+                        await human_like_fill(page_obj, reason_selector, "testing")
                     else:
                         inputs = page_obj.locator("input, textarea")
                         for i in range(await inputs.count()):
@@ -166,7 +173,8 @@ class JobManager:
                             submit_btn = page_obj.locator(sel).first
                             break
                     if submit_btn:
-                        await submit_btn.click()
+                        await job.emit_raw(StreamManager.emit_demo_thought("Submitting support gateway"))
+                        await human_like_click_locator(page_obj, submit_btn)
                     else:
                         await page_obj.keyboard.press("Enter")
                     try:
@@ -184,7 +192,9 @@ class JobManager:
                 for gateway_url in gateways_to_try:
                     try:
                         await job.emit_raw(StreamManager.emit_thinking(0, "Authentication", f"Syncing via: {gateway_url}..."))
+                        await job.emit_raw(StreamManager.emit_demo_thought("Opening support gateway"))
                         await page.goto(gateway_url, timeout=30000)
+                        await ensure_demo_overlay(page)
                         await handle_support_login(page)
                         
                         db_link = None
@@ -202,7 +212,8 @@ class JobManager:
                                     db_link = page.locator(sel).first
                                     break
                         if db_link:
-                            await db_link.click()
+                            await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
+                            await human_like_click_locator(page, db_link)
                             try:
                                 await page.wait_for_load_state("load", timeout=10000)
                             except Exception:
@@ -217,7 +228,9 @@ class JobManager:
                     raise AuthenticationError("Gateway redirection failed: browser stuck at login page.", "support_auth")
 
             # Navigate to sandbox
+            await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
             await page.goto(target_nav_url, timeout=30000)
+            await ensure_demo_overlay(page)
             if "/web/login" in page.url:
                 await obs.record_warning("Cookie synchronization initiated...", context="initial_navigation")
                 await authenticate_via_support_gateway(job.db_url)
@@ -227,6 +240,13 @@ class JobManager:
             if is_production:
                 await job.transition_to(RunState.DUPLICATING)
                 await handle_support_login(page)
+                
+                if "/web/login" in page.url or "accounts.odoo.com" in page.url or "/support/login" in page.url:
+                    raise AuthenticationError(
+                        "Gateway authentication failed: browser stuck at login page. "
+                        "Please ensure you are actively logged into Odoo on Chrome Profile 3 to sync cookies.",
+                        "support_auth"
+                    )
                 
                 # Scan for duplicate
                 async def find_duplicate_link():
@@ -241,7 +261,8 @@ class JobManager:
                 if dup_link:
                     duplicate_chosen = await dup_link.get_attribute("href")
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", f"Found existing duplicate: {duplicate_chosen}. Entering..."))
-                    await dup_link.click()
+                    await job.emit_raw(StreamManager.emit_demo_thought("Opening existing duplicate database"))
+                    await human_like_click_locator(page, dup_link)
                 else:
                     # Click Duplicate button
                     dup_btn = None
@@ -253,14 +274,15 @@ class JobManager:
                         raise DuplicationError("Duplicate button not found on gateway page.", "db_duplication")
 
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", "Creating database copy..."))
-                    await dup_btn.click()
+                    await job.emit_raw(StreamManager.emit_demo_thought("Creating database copy"))
+                    await human_like_click_locator(page, dup_btn)
                     
                     # Check confirmation modal
                     try:
                         for sel in selectors.get_selector("modal_confirm"):
                             loc = page.locator(sel)
                             if await loc.count() > 0:
-                                await loc.first.click()
+                                await human_like_click_locator(page, loc.first)
                                 break
                     except Exception:
                         pass
@@ -274,6 +296,7 @@ class JobManager:
                         
                         try:
                             await page.goto(target_nav_url, timeout=15000)
+                            await ensure_demo_overlay(page)
                             await page.wait_for_load_state("load", timeout=8000)
                         except Exception:
                             pass
@@ -282,7 +305,8 @@ class JobManager:
                         dup_link = await find_duplicate_link()
                         if dup_link:
                             duplicate_chosen = await dup_link.get_attribute("href")
-                            await dup_link.click()
+                            await job.emit_raw(StreamManager.emit_demo_thought("Opening completed duplicate"))
+                            await human_like_click_locator(page, dup_link)
                             found_dup = True
                             break
                     
@@ -307,7 +331,7 @@ class JobManager:
                 for sel in selectors.get_selector("arrow_toggle"):
                     loc = page.locator(sel)
                     if await loc.count() > 0 and await loc.first.is_visible():
-                        await loc.first.click()
+                        await human_like_click_locator(page, loc.first)
                         try:
                             await page.wait_for_load_state("load", timeout=3000)
                         except Exception:
@@ -318,7 +342,7 @@ class JobManager:
                 for sel in selectors.get_selector("grid_toggle"):
                     loc = page.locator(sel)
                     if await loc.count() > 0 and await loc.first.is_visible():
-                        await loc.first.click()
+                        await human_like_click_locator(page, loc.first)
                         try:
                             await page.wait_for_load_state("load", timeout=5000)
                         except Exception:
@@ -382,6 +406,8 @@ class JobManager:
             planner_engine = Planner(api_key=gemini_key)
             plan = await planner_engine.generate_plan(job.ticket_text, active_db_url)
             await obs.record_event("Plan validated", f"Module={plan.module} Confidence={plan.confidence:.2f}")
+            plan_payload = plan.model_dump()
+            await job.emit_raw(StreamManager.emit_plan(plan_payload))
 
             # Confidence check gate
             if plan.confidence < 0.6:
@@ -405,6 +431,7 @@ class JobManager:
 
             # ── 5. Executing ──────────────────────────────────────────────────
             await job.transition_to(RunState.EXECUTING)
+            await job.emit_raw(StreamManager.emit_demo_thought("Starting approved execution plan"))
             # Legacy placeholder high-level plan string pass for investigate_with_graph
             plan_str = f"Plan: {plan.summary}\n" + "\n".join([f"{s.id}. {s.intent}" for s in plan.steps])
             
