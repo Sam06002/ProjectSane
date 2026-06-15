@@ -10,7 +10,8 @@ import traceback
 from typing import Any
 
 from langchain_core.tools import tool
-from browser_agent import human_like_click
+from browser_agent import demo_pause, ensure_demo_overlay, human_like_click, human_like_fill
+from demo_mode import emit_demo_thought, emit_plan_progress
 from exceptions import ExecutionError
 import odoo_selectors as selectors
 
@@ -26,8 +27,11 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
         """Navigate the browser to the specified URL and wait for it to load. Returns the final page URL."""
         print(f"[TOOL] navigate_to_url → {url}")
         try:
+            await emit_demo_thought(browser, "Opening requested Odoo page")
             await page.goto(url)
             await page.wait_for_timeout(1500)
+            await ensure_demo_overlay(page)
+            await emit_demo_thought(browser, "Verifying page loaded")
             return page.url
         except Exception as e:
             print(f"[TOOL ERROR] navigate_to_url: {e}\n{traceback.format_exc()}")
@@ -68,11 +72,13 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
         """Click on the element matching the specified selector registry key (e.g. 'save_button') or text."""
         print(f"[TOOL] click_element → {selector}")
         try:
+            await emit_demo_thought(browser, f"Selecting {selector}")
             resolved_patterns = selectors.get_selector(selector)
             clicked = False
             error_msgs = []
             for pat in resolved_patterns:
                 try:
+                    await emit_demo_thought(browser, f"Highlighting {selector}")
                     await human_like_click(page, pat)
                     clicked = True
                     break
@@ -81,6 +87,7 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
             
             if not clicked:
                 raise ExecutionError(f"Cannot click element '{selector}': No pattern matched on current page ({page.url}). Failures: {error_msgs}", "click_element")
+            await emit_plan_progress(browser, 0, "active", f"Clicked {selector}")
             return f"Clicked: {selector}"
         except Exception as e:
             print(f"[TOOL ERROR] click_element: {e}\n{traceback.format_exc()}")
@@ -91,15 +98,18 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
         """Type input_str into the input field matching the registry key (e.g. 'reason_input') or selector."""
         print(f"[TOOL] type_into_field → inputting '{input_str}' into {selector}")
         try:
+            await emit_demo_thought(browser, f"Entering value in {selector}")
             resolved_patterns = selectors.get_selector(selector)
             typed = False
             error_msgs = []
             for pat in resolved_patterns:
                 try:
-                    await page.fill(pat, input_str)
+                    await human_like_fill(page, pat, input_str)
                     # Support return press for search bars
                     if "search" in selector.lower() or "search" in pat.lower():
+                        await emit_demo_thought(browser, "Submitting search")
                         await page.locator(pat).press("Enter")
+                        await demo_pause(page)
                     typed = True
                     break
                 except Exception as e:
@@ -107,6 +117,7 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
 
             if not typed:
                 raise ExecutionError(f"Cannot type into field '{selector}': No pattern matched. Failures: {error_msgs}", "type_into_field")
+            await emit_plan_progress(browser, 0, "active", f"Updated {selector}")
             return f"Typed '{input_str}' into {selector}"
         except Exception as e:
             print(f"[TOOL ERROR] type_into_field: {e}\n{traceback.format_exc()}")
@@ -117,8 +128,11 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
         """Check the current Odoo database version by navigating to General Settings. Returns page title and URL."""
         print(f"[TOOL] check_odoo_version → checking")
         try:
+            await emit_demo_thought(browser, "Opening General Settings")
             await page.goto(f"{base_url}/web#action=base_setup.action_general_configuration")
             await page.wait_for_timeout(1500)
+            await ensure_demo_overlay(page)
+            await emit_demo_thought(browser, "Verifying Odoo version context")
             title = await page.title()
             return f"Page: {title} | URL: {page.url}"
         except Exception as e:
@@ -130,8 +144,11 @@ def create_langchain_tools(page: Any, browser: Any, base_url: str) -> list:
         """Get the list of installed Odoo modules by navigating to settings/apps."""
         print(f"[TOOL] get_installed_modules → checking")
         try:
+            await emit_demo_thought(browser, "Opening Apps settings")
             await page.goto(f"{base_url}/odoo/settings/apps")
             await page.wait_for_timeout(2000)
+            await ensure_demo_overlay(page)
+            await emit_demo_thought(browser, "Checking installed modules")
             return await page.title()
         except Exception as e:
             print(f"[TOOL ERROR] get_installed_modules: {e}\n{traceback.format_exc()}")

@@ -15,6 +15,13 @@ from typing import Tuple, List, Optional
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from exceptions import BrowserError
+from demo_mode import (
+    DEMO_ACTION_DELAY_MS,
+    DEMO_CURSOR_STEP_DELAY_MS,
+    DEMO_HIGHLIGHT_MS,
+    DEMO_MODE,
+    demo_settings,
+)
 
 # ── Chrome session constants ───────────────────────────────────────────────────
 SOURCE_COOKIES = str(
@@ -39,38 +46,186 @@ _STALE_CDP_ERRORS = (
 
 # ── Human-Like Mouse Interaction ─────────────────────────────────────────────────────────
 
+DEMO_OVERLAY_SCRIPT = """
+(() => {
+  if (window.__projectSaneDemoOverlay) return;
+  window.__projectSaneDemoOverlay = true;
+  const style = document.createElement('style');
+  style.id = 'project-sane-demo-style';
+  style.textContent = `
+    #project-sane-cursor {
+      position: fixed; left: 24px; top: 24px; width: 22px; height: 22px;
+      z-index: 2147483647; pointer-events: none; transform: translate(-2px, -2px);
+      filter: drop-shadow(0 7px 14px rgba(0,0,0,.28));
+    }
+    #project-sane-cursor::before {
+      content: ''; position: absolute; left: 0; top: 0; width: 0; height: 0;
+      border-left: 14px solid #0ea5e9; border-top: 9px solid transparent;
+      border-bottom: 9px solid transparent; transform: rotate(-18deg);
+    }
+    #project-sane-cursor::after {
+      content: ''; position: absolute; left: 9px; top: 12px; width: 8px; height: 8px;
+      border-radius: 50%; background: #f8fafc; border: 2px solid #0f172a;
+    }
+    .project-sane-click-ring {
+      position: fixed; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px;
+      border: 2px solid #22d3ee; border-radius: 999px; z-index: 2147483646;
+      pointer-events: none; animation: projectSaneClick .55s ease-out forwards;
+    }
+    @keyframes projectSaneClick {
+      from { opacity: .95; transform: scale(.35); }
+      to { opacity: 0; transform: scale(3.6); }
+    }
+    .project-sane-highlight {
+      outline: 3px solid #22d3ee !important; outline-offset: 3px !important;
+      box-shadow: 0 0 0 6px rgba(34,211,238,.18), 0 0 24px rgba(34,211,238,.5) !important;
+      transition: outline-color .12s ease, box-shadow .12s ease;
+    }
+  `;
+  document.documentElement.appendChild(style);
+  const cursor = document.createElement('div');
+  cursor.id = 'project-sane-cursor';
+  document.documentElement.appendChild(cursor);
+  window.__projectSaneCursor = { x: 35, y: 35 };
+  window.__projectSaneMoveCursor = async (x, y, steps = 24, stepDelay = 18) => {
+    const start = window.__projectSaneCursor || { x: 35, y: 35 };
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      const ease = t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+      const nx = start.x + (x - start.x) * ease;
+      const ny = start.y + (y - start.y) * ease;
+      cursor.style.left = `${nx}px`;
+      cursor.style.top = `${ny}px`;
+      window.__projectSaneCursor = { x: nx, y: ny };
+      await new Promise(r => setTimeout(r, stepDelay));
+    }
+  };
+  window.__projectSaneClickEffect = (x, y) => {
+    const ring = document.createElement('div');
+    ring.className = 'project-sane-click-ring';
+    ring.style.left = `${x}px`;
+    ring.style.top = `${y}px`;
+    document.documentElement.appendChild(ring);
+    setTimeout(() => ring.remove(), 700);
+  };
+  window.__projectSaneHighlight = async (el, duration = 550) => {
+    if (!el) return;
+    el.classList.add('project-sane-highlight');
+    await new Promise(r => setTimeout(r, duration));
+    el.classList.remove('project-sane-highlight');
+  };
+})();
+"""
+
+
+async def ensure_demo_overlay(page: Page) -> None:
+    if not DEMO_MODE:
+        return
+    try:
+        await page.evaluate(DEMO_OVERLAY_SCRIPT)
+    except Exception:
+        pass
+
+
+async def demo_pause(page: Page, ms: int = DEMO_ACTION_DELAY_MS) -> None:
+    if DEMO_MODE and ms > 0:
+        await page.wait_for_timeout(ms)
+
+
+async def _visible_center_for_selector(page: Page, selector: str, timeout: int) -> Tuple[object, dict]:
+    element = await page.wait_for_selector(selector, state="visible", timeout=timeout)
+    box = await element.bounding_box()
+    if not box:
+        raise ValueError(f"Target UI element '{selector}' has no bounding box (not clickable).")
+    return element, box
+
+
 async def human_like_click(page: Page, selector: str, timeout: int = 10000) -> None:
     """
     Locates an Odoo UI element, smoothly moves the virtual cursor to its
     coordinate target, and performs a natural click.
     """
-    element = await page.wait_for_selector(selector, state="visible", timeout=timeout)
-    box = await element.bounding_box()
-    if not box:
-        raise ValueError(f"Target UI element '{selector}' has no bounding box (not clickable).")
+    await ensure_demo_overlay(page)
+    element, box = await _visible_center_for_selector(page, selector, timeout)
 
     target_x = box["x"] + box["width"] / 2 + random.randint(-2, 2)
     target_y = box["y"] + box["height"] / 2 + random.randint(-2, 2)
-    current_x, current_y = 100, 100
+    if DEMO_MODE:
+        await page.evaluate(
+            """async ({ x, y, stepDelay }) => {
+                await window.__projectSaneMoveCursor?.(x, y, 26, stepDelay);
+            }""",
+            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
+        )
+        await element.evaluate(
+            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
+            DEMO_HIGHLIGHT_MS,
+        )
+    else:
+        await page.mouse.move(target_x, target_y)
 
-    steps = 15
-    for i in range(steps):
-        t = i / float(steps)
-        move_x = current_x + (target_x - current_x) * t
-        move_y = current_y + (target_y - current_y) * t
-        await page.mouse.move(move_x, move_y)
-        await asyncio.sleep(0.02)
-
+    if DEMO_MODE:
+        await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
     await page.mouse.click(target_x, target_y)
-    await asyncio.sleep(0.7)
+    await demo_pause(page)
+
+
+async def human_like_fill(page: Page, selector: str, value: str, timeout: int = 10000) -> None:
+    await ensure_demo_overlay(page)
+    element, box = await _visible_center_for_selector(page, selector, timeout)
+    target_x = box["x"] + min(max(box["width"] * 0.35, 10), max(box["width"] - 8, 10))
+    target_y = box["y"] + box["height"] / 2
+    if DEMO_MODE:
+        await page.evaluate(
+            """async ({ x, y, stepDelay }) => {
+                await window.__projectSaneMoveCursor?.(x, y, 24, stepDelay);
+            }""",
+            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
+        )
+        await element.evaluate(
+            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
+            DEMO_HIGHLIGHT_MS,
+        )
+    await page.fill(selector, value)
+    await demo_pause(page, max(350, DEMO_ACTION_DELAY_MS // 2))
+
+
+async def human_like_click_locator(page: Page, locator, timeout: int = 10000) -> None:
+    await locator.wait_for(state="visible", timeout=timeout)
+    handle = await locator.element_handle()
+    if handle is None:
+        raise ValueError("Target locator has no element handle.")
+    box = await handle.bounding_box()
+    if not box:
+        raise ValueError("Target locator has no bounding box.")
+    await ensure_demo_overlay(page)
+    target_x = box["x"] + box["width"] / 2 + random.randint(-2, 2)
+    target_y = box["y"] + box["height"] / 2 + random.randint(-2, 2)
+    if DEMO_MODE:
+        await page.evaluate(
+            """async ({ x, y, stepDelay }) => {
+                await window.__projectSaneMoveCursor?.(x, y, 24, stepDelay);
+            }""",
+            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
+        )
+        await handle.evaluate(
+            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
+            DEMO_HIGHLIGHT_MS,
+        )
+        await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
+    await page.mouse.click(target_x, target_y)
+    await demo_pause(page)
 
 
 class BrowserRunContext:
     """Run-specific container for Playwright BrowserContext, Page, and screenshots."""
-    def __init__(self, context: BrowserContext, page: Page):
+    def __init__(self, context: BrowserContext, page: Page, owns_context: bool = True):
         self.context: BrowserContext = context
         self.page: Page = page
+        self.owns_context = owns_context
         self.screenshots: List[str] = []
+        self.sse_emitter = None
+        self.demo_mode = demo_settings()
 
     async def close(self) -> None:
         """Closes the page and browser context cleanly."""
@@ -80,7 +235,8 @@ class BrowserRunContext:
         except Exception:
             pass
         try:
-            await self.context.close()
+            if self.owns_context:
+                await self.context.close()
         except Exception:
             pass
 
@@ -201,21 +357,40 @@ class BrowserManager:
                     raise BrowserError(f"Failed to connect over CDP: {e}", "cdp_connect")
 
     async def create_run_context(self) -> BrowserRunContext:
-        """Creates an isolated browser context and page, inheriting cookies from Default profile."""
+        """Creates a run page, preferring isolated contexts when CDP supports them."""
         await self.ensure_connected()
         if not self.browser:
             raise BrowserError("Browser not initialized.", "create_run_context")
-            
-        # Get cookies from the default profile context (contexts[0])
+
         default_context = self.browser.contexts[0]
-        cookies = await default_context.cookies()
-        
-        # Open isolated context
-        context = await self.browser.new_context()
-        await context.add_cookies(cookies)
-        
-        page = await context.new_page()
-        return BrowserRunContext(context, page)
+        cookies = []
+        try:
+            cookies = await default_context.cookies()
+        except Exception as e:
+            print(f"[Browser] Cookie snapshot unavailable over CDP; continuing without cookie copy: {e}")
+
+        try:
+            context = await self.browser.new_context()
+            if cookies:
+                await context.add_cookies(cookies)
+            if DEMO_MODE:
+                await context.add_init_script(DEMO_OVERLAY_SCRIPT)
+            page = await context.new_page()
+            await ensure_demo_overlay(page)
+            return BrowserRunContext(context, page, owns_context=True)
+        except Exception as e:
+            err = str(e)
+            if "Browser context management is not supported" not in err:
+                raise
+            print("[Browser] Isolated context unavailable over CDP; using fresh page in default profile.")
+            if DEMO_MODE:
+                try:
+                    await default_context.add_init_script(DEMO_OVERLAY_SCRIPT)
+                except Exception:
+                    pass
+            page = await default_context.new_page()
+            await ensure_demo_overlay(page)
+            return BrowserRunContext(default_context, page, owns_context=False)
 
     # ── Legacy/Backward Compatibility Interface ──────────────────────────────
 

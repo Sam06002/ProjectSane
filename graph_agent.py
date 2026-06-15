@@ -26,6 +26,7 @@ import memory_store
 import nest_asyncio
 nest_asyncio.apply()  # allows run_until_complete inside a running event loop (thread safety)
 from langchain_agent import create_langchain_tools
+from demo_mode import emit_demo_thought, emit_plan_progress
 import sys
 from exceptions import BaseProjectSaneException, PlanningError, ExecutionError, BrowserError
 
@@ -144,14 +145,35 @@ async def safe_llm_invoke(prompt_payload, groq_api_key: str, tools: list = None)
 # Planner node removed. Planning is done authoritatively by Gemini/Gemma 3 prior to Graph execution.
 
 
+def _demo_message_for_tool(tool_name: str, tool_args: dict) -> str:
+    text = " ".join(str(v) for v in (tool_args or {}).values()).strip()
+    target = text[:80] if text else "current page"
+    if tool_name == "navigate_to_url":
+        return "Opening Odoo page"
+    if tool_name == "click_element":
+        return f"Selecting {target}"
+    if tool_name == "type_into_field":
+        return f"Entering information in {target}"
+    if tool_name == "take_screenshot":
+        return "Verifying current page"
+    if tool_name == "check_odoo_version":
+        return "Verifying Odoo version"
+    if tool_name == "get_installed_modules":
+        return "Checking installed modules"
+    if tool_name == "get_page_content":
+        return "Reading visible page context"
+    if tool_name == "search_past_tickets":
+        return "Searching past resolutions"
+    return f"Running {tool_name}"
+
+
 async def executor_node(state: GraphState, browser=None) -> dict:
     """
     EXECUTOR NODE — Inspects the live Odoo sandbox and executes the plan.
 
-    Uses Gemini (gemini-2.5-flash) for multimodal vision checkpoints:
-    after each major browser tool action a base64-encoded screenshot is
-    embedded as an image_url part in the next LLM message so Gemini can
-    visually validate the page state before choosing the next action.
+    Uses Gemini (gemini-2.5-flash) for multimodal vision checkpoints only
+    at navigation, configuration-change, submission, and explicit verification
+    boundaries so demo runs remain observable without exhausting vision quota.
     Falls back to text-only mode if the browser page is unavailable.
     """
     current_attempt = state.get("attempt", 0) + 1
@@ -229,8 +251,9 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                 "Your goal is to investigate, reproduce, and locate the error reported in the ticket.\n"
                 "Follow these rules:\n"
                 "1. Execute the plan step-by-step using the available tools.\n"
-                "2. Call tools as needed. After each action-taking tool (navigate_to_url, click_element, "
-                "type_into_field), results will be returned describing the page state.\n"
+                "2. Call tools as needed. Vision screenshots are checkpointed after navigation, "
+                "configuration changes, form submissions, and verification checks. Routine clicks "
+                "do not trigger vision checkpoints.\n"
                 "3. Avoid guessing or hallucinating database content. Use the tools to verify everything.\n"
                 "4. If you encounter an error, diagnose its cause from the visual and text context.\n"
                 "5. Once investigation is complete or the issue is reproduced, output your final findings "
@@ -256,8 +279,19 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     execution_log = []
     tool_map = {t.name: t for t in tools}
 
-    # Vision checkpoint: embed screenshot after these action tools
-    _VISION_CHECKPOINT_TOOLS = {"navigate_to_url", "click_element", "type_into_field"}
+    def _is_vision_checkpoint(tool_name: str, result: str, args: dict) -> bool:
+        if tool_name in {"navigate_to_url", "check_odoo_version", "get_installed_modules", "take_screenshot"}:
+            return True
+        haystack = f"{tool_name} {args} {result}".lower()
+        checkpoint_terms = (
+            "save", "submit", "apply", "confirm", "create", "update", "configure",
+            "settings", "verify", "validation", "form", "posted", "changed"
+        )
+        if tool_name == "type_into_field" and any(term in haystack for term in ("settings", "config", "search", "filter")):
+            return True
+        if tool_name == "click_element" and any(term in haystack for term in checkpoint_terms):
+            return True
+        return False
 
     response = None
     while tool_calls_count < max_tool_calls:
@@ -286,6 +320,8 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                     break
 
                 print(f"[REACT LOOP] Calling tool: {tool_name} with args {tool_args}")
+                await emit_demo_thought(browser, _demo_message_for_tool(tool_name, tool_args), step_id=tool_calls_count)
+                await emit_plan_progress(browser, tool_calls_count, "active", f"{tool_name}: {tool_args}")
                 
                 # Execute tool
                 if tool_name in tool_map:
@@ -305,6 +341,7 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                     print(f"[REACT LOOP ERROR] {result}")
 
                 execution_log.append(log_entry)
+                await emit_plan_progress(browser, tool_calls_count, "done", str(result)[:220])
 
                 # Append tool result as text ToolMessage
                 tool_message = ToolMessage(
@@ -317,7 +354,7 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                 # ── Vision Checkpoint ─────────────────────────────────────────
                 # After key browser-action tools, embed a fresh screenshot so
                 # Gemini can visually validate the new page state.
-                if tool_name in _VISION_CHECKPOINT_TOOLS:
+                if _is_vision_checkpoint(tool_name, str(result), tool_args):
                     post_b64 = await _capture_screenshot(f"tool_{tool_calls_count}")
                     if post_b64:
                         vision_msg = HumanMessage(content=[

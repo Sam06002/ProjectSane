@@ -237,6 +237,115 @@
         }
         @keyframes blink { 50% { opacity: 0; } }
 
+        /* ── Demo plan and rationale ─────────────────────────────────────── */
+        .demo-panel {
+            display: none;
+            margin: 12px 16px 0;
+            border: 1px solid var(--border);
+            background: #0a101c;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .demo-panel.visible { display: block; }
+        .demo-panel-header {
+            padding: 8px 11px;
+            border-bottom: 1px solid var(--border);
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--muted2);
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .demo-thought-feed {
+            max-height: 92px;
+            overflow-y: auto;
+            padding: 8px 10px;
+        }
+        .demo-thought {
+            font-size: 11.5px;
+            color: var(--text);
+            line-height: 1.45;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(37,48,71,0.45);
+        }
+        .demo-thought:last-child { border-bottom: none; }
+        .plan-viewer {
+            display: none;
+            margin: 10px 16px 0;
+            border: 1px solid var(--border);
+            background: var(--bg4);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .plan-viewer.visible { display: block; }
+        .plan-summary {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 11.5px;
+            color: var(--muted2);
+            line-height: 1.45;
+        }
+        .plan-summary strong {
+            display: block;
+            color: var(--text);
+            font-size: 12px;
+            margin-bottom: 2px;
+        }
+        .plan-steps {
+            max-height: 210px;
+            overflow-y: auto;
+            padding: 8px 9px;
+        }
+        .plan-step {
+            display: grid;
+            grid-template-columns: 22px 1fr;
+            gap: 8px;
+            padding: 7px 6px;
+            border-radius: 6px;
+            border: 1px solid transparent;
+        }
+        .plan-step.active {
+            border-color: rgba(56,189,248,0.35);
+            background: rgba(56,189,248,0.06);
+        }
+        .plan-step.done {
+            border-color: rgba(16,185,129,0.2);
+            background: rgba(16,185,129,0.045);
+        }
+        .plan-step.error {
+            border-color: rgba(239,68,68,0.24);
+            background: rgba(239,68,68,0.05);
+        }
+        .plan-step-num {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--border2);
+            color: var(--muted2);
+            font-size: 10px;
+            font-weight: 700;
+        }
+        .plan-step.done .plan-step-num { background: rgba(16,185,129,0.18); color: var(--green); }
+        .plan-step.active .plan-step-num { background: rgba(56,189,248,0.18); color: var(--blue); }
+        .plan-step.error .plan-step-num { background: rgba(239,68,68,0.18); color: var(--red); }
+        .plan-step-title {
+            font-size: 11.5px;
+            font-weight: 600;
+            line-height: 1.35;
+        }
+        .plan-step-meta {
+            margin-top: 2px;
+            color: var(--muted);
+            font-size: 10.5px;
+            line-height: 1.35;
+        }
+
         /* ── Center: Monitor ─────────────────────────────────────────────── */
         .monitor-panel {
             width: 280px;
@@ -657,6 +766,21 @@
                 </div>
                 <div class="draft-card-body" id="finalDraftBody"></div>
             </div>
+            <div class="demo-panel" id="demoThoughtPanel">
+                <div class="demo-panel-header">
+                    <span>Live Thought Stream</span>
+                    <span>Demo Mode</span>
+                </div>
+                <div class="demo-thought-feed" id="demoThoughtFeed"></div>
+            </div>
+            <div class="plan-viewer" id="planViewer">
+                <div class="demo-panel-header">
+                    <span>Execution Plan</span>
+                    <span id="planStatus">Awaiting plan</span>
+                </div>
+                <div class="plan-summary" id="planSummary"></div>
+                <div class="plan-steps" id="planSteps"></div>
+            </div>
             <div class="stream-container" id="stream-container">
                 <div class="stream-placeholder">
                     <p>Enter a ticket and press <span>Execute Pipeline</span> to start the investigation.</p>
@@ -847,6 +971,85 @@ function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Demo mode plan and thought stream ─────────────────────────────────────────
+function resetDemoPanels() {
+    document.getElementById('demoThoughtPanel').classList.remove('visible');
+    document.getElementById('demoThoughtFeed').innerHTML = '';
+    document.getElementById('planViewer').classList.remove('visible');
+    document.getElementById('planSummary').innerHTML = '';
+    document.getElementById('planSteps').innerHTML = '';
+    document.getElementById('planStatus').textContent = 'Awaiting plan';
+}
+
+function addDemoThought(message) {
+    if (!message) return;
+    const panel = document.getElementById('demoThoughtPanel');
+    const feed = document.getElementById('demoThoughtFeed');
+    panel.classList.add('visible');
+    const el = document.createElement('div');
+    el.className = 'demo-thought';
+    el.textContent = message;
+    feed.appendChild(el);
+    while (feed.children.length > 8) feed.removeChild(feed.firstChild);
+    feed.scrollTop = feed.scrollHeight;
+}
+
+function renderExecutionPlan(plan) {
+    const viewer = document.getElementById('planViewer');
+    const summary = document.getElementById('planSummary');
+    const steps = document.getElementById('planSteps');
+    viewer.classList.add('visible');
+    document.getElementById('planStatus').textContent = 'Ready';
+    summary.innerHTML = `
+        <strong>${escHtml(plan.summary || 'Generated support workflow')}</strong>
+        ${escHtml(plan.module || 'Odoo')} · ${Math.round((plan.confidence || 0) * 100)}% confidence
+    `;
+    steps.innerHTML = (plan.steps || []).map(step => `
+        <div class="plan-step" id="plan-step-${step.id}" data-step="${step.id}">
+            <div class="plan-step-num">${step.id}</div>
+            <div>
+                <div class="plan-step-title">${escHtml(step.intent || '')}</div>
+                <div class="plan-step-meta">${escHtml(step.action?.type || '')} · ${escHtml(step.action?.target || '')}</div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function updatePlanProgress(data) {
+    document.getElementById('planViewer').classList.add('visible');
+    const status = data.status || 'active';
+    document.getElementById('planStatus').textContent =
+        status === 'done' ? 'In progress' : status.charAt(0).toUpperCase() + status.slice(1);
+    const id = Number(data.step_id || 0);
+    let stepEl = document.getElementById(`plan-step-${id}`);
+    if (!stepEl && id > 0) {
+        const steps = document.getElementById('planSteps');
+        stepEl = document.createElement('div');
+        stepEl.className = 'plan-step';
+        stepEl.id = `plan-step-${id}`;
+        stepEl.innerHTML = `
+            <div class="plan-step-num">${id}</div>
+            <div>
+                <div class="plan-step-title">${escHtml(data.message || 'Executing browser action')}</div>
+                <div class="plan-step-meta">Live browser action</div>
+            </div>
+        `;
+        steps.appendChild(stepEl);
+    }
+    if (!stepEl) return;
+    if (status === 'active') {
+        stepEl.classList.add('active');
+    } else if (status === 'done' || status === 'completed') {
+        stepEl.classList.remove('active');
+        stepEl.classList.add('done');
+        stepEl.querySelector('.plan-step-num').textContent = '✓';
+    } else if (status === 'failed') {
+        stepEl.classList.remove('active');
+        stepEl.classList.add('error');
+    }
+    stepEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
 // ── Stream card helpers ────────────────────────────────────────────────────────
 const ICONS = {
     thinking: '🤔', action: '⚡', success: '✅', error: '❌',
@@ -944,6 +1147,13 @@ function handlePipelineEvent(eventType, data) {
             card.classList.add('visible');
         }
         renderDraftReport(data);
+    } else if (eventType === 'demo_thought') {
+        addDemoThought(data.message);
+    } else if (eventType === 'execution_plan') {
+        renderExecutionPlan(data);
+        addDemoThought('Reviewing generated execution plan');
+    } else if (eventType === 'plan_progress') {
+        updatePlanProgress(data);
     }
 }
 
@@ -1148,6 +1358,7 @@ async function runPipeline() {
     document.getElementById('reportBadge').style.cssText = '';
 
     document.getElementById('stream-container').innerHTML = '';
+    resetDemoPanels();
 
     // Reset the final draft card
     document.getElementById('finalDraftCard').classList.remove('visible');
