@@ -1157,7 +1157,7 @@ async function runPipeline() {
     document.getElementById('liveDot').classList.add('active');
     document.getElementById('headerDot').classList.remove('done');
     document.getElementById('headerDot').classList.add('active');
-    document.getElementById('statusLabel').textContent = 'Running';
+    document.getElementById('statusLabel').textContent = 'Starting...';
 
     const payload = {
         ticket_text: document.getElementById('ticket').value,
@@ -1165,12 +1165,20 @@ async function runPipeline() {
     };
 
     try {
-        const response = await fetch('/api/run', {
+        const runResponse = await fetch('/api/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+        if (!runResponse.ok) {
+            const errData = await runResponse.json();
+            throw new Error(errData.error || `HTTP ${runResponse.status}`);
+        }
+        const runData = await runResponse.json();
+        const runId = runData.run_id;
 
+        // Connect to SSE stream endpoint
+        const response = await fetch(`/api/runs/${runId}/stream`);
         const reader  = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
@@ -1201,6 +1209,12 @@ async function runPipeline() {
                 if (parsed.step_id) finaliseThinking(parsed.step_id);
 
                 const eventType = eventMatch ? eventMatch[1].trim() : '';
+
+                if (eventType === 'state_change') {
+                    document.getElementById('statusLabel').textContent = parsed.new_state;
+                    addMonitorEntry('info', 'state', `Status: ${parsed.new_state}`);
+                    continue;
+                }
 
                 if (['monitor_error','monitor_warning','monitor_event','monitor_engine'].includes(eventType)) {
                     handleMonitorEvent(eventType, parsed);

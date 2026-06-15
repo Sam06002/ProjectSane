@@ -1,10 +1,11 @@
 """
-graph_agent.py — LangGraph Multi-Agent State Machine for Project Sane.
+graph_agent.py — LangGraph Multi-Agent State Machine for Project Sane v3.
 
-Three-node architecture:
-  PLANNER  → generates an initial investigation plan from ticket context
-  EXECUTOR → executes tool loops against the Odoo sandbox, captures results
-  REVIEWER → checks if the reported error was reproduced; decides retry or end
+Hybrid Split-Compute Topology (ANTIGRAVITY_PROMPT_015):
+  PLANNER  → Text-only reasoning via Groq (llama-3.3-70b-versatile, 14,400 RPD).
+  EXECUTOR → Multimodal vision via Gemini (gemini-2.5-flash); screenshots embedded
+             as base64 image parts at key navigation decision checkpoints.
+  REVIEWER → Text-only reasoning via Groq.
 
 Bounded retry: the REVIEWER→EXECUTOR loop runs at most 3 times (hard ceiling).
 LangSmith tracing is activated automatically via LANGCHAIN_TRACING_V2 env var.
@@ -18,14 +19,15 @@ import time
 from typing import TypedDict, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 import memory_store
 import nest_asyncio
 nest_asyncio.apply()  # allows run_until_complete inside a running event loop (thread safety)
 from langchain_agent import create_langchain_tools
 import sys
+from exceptions import BaseProjectSaneException, PlanningError, ExecutionError, BrowserError
 
 
 # ── State Schema ──────────────────────────────────────────────────────────────
@@ -38,7 +40,8 @@ class GraphState(TypedDict):
     ticket_info: dict
     base_url: str
     approved_plan: str
-    gemini_api_key: str
+    groq_api_key: str    # for planner + reviewer nodes (text reasoning)
+    gemini_api_key: str  # for executor node (multimodal vision checkpoints)
     job_id: str
 
     # ── Mutable runtime state ─────────────────────────────────────────────────
@@ -51,131 +54,105 @@ class GraphState(TypedDict):
     final_findings: str
 
 
-# ── Helper: build the LLM instance used by all nodes ─────────────────────────
+# ── Helper: provider engine factories ────────────────────────────────────────
 
-def _build_llm(api_key: str) -> ChatGoogleGenerativeAI:
-    """Construct a LangChain ChatGoogleGenerativeAI wrapper for Gemini 2.5-flash."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=api_key,
+def get_text_engine(groq_key: str) -> ChatGroq:
+    """Planner & Reviewer: text-only Groq wrapper (llama-3.3-70b-versatile)."""
+    return ChatGroq(
+        model="llama-3.3-70b-versatile",
+        groq_api_key=groq_key,
         temperature=0.1,
     )
 
 
-async def safe_llm_invoke(prompt_payload, gemini_api_key: str, tools: list = None):
-    """
-    Executes a primary ainvoke call to native Gemini. 
-    Intercepts 429 errors to run a seamless failover to OpenRouter.
-    """
-    # 1. Primary Attempt: Native Google GenAI Channel
-    try:
-        primary_llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=gemini_api_key,
-            temperature=0.1,
-        )
-        if tools:
-            primary_llm = primary_llm.bind_tools(tools)
-        return await primary_llm.ainvoke(prompt_payload)
-        
-    except Exception as e:
-        error_msg = str(e)
-        # Check explicitly for standard Gemini API quota limit signatures
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            print("\n[SYSTEM WARN] Quota Exhausted on Primary Channel. Initiating OpenRouter Failover Core...")
-            sys.stdout.flush()
-            
-            openrouter_key = os.getenv("OPENROUTER_API_KEY")
-            openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-            
-            if not openrouter_key:
-                print("[SYSTEM ERROR] OpenRouter failover aborted: OPENROUTER_API_KEY is missing from environment.")
-                sys.stdout.flush()
-                raise e
-                
-            # Initialize the OpenAI-compatible OpenRouter interface client
-            fallback_llm = ChatOpenAI(
-                model=openrouter_model,
-                openai_api_key=openrouter_key,
-                openai_api_base="https://openrouter.ai/api/v1",
-                temperature=0.1,
-                default_headers={
-                    "HTTP-Referer": "http://localhost:8000",
-                    "X-Title": "Project Sane v3 Support Agent Core",
-                }
-            )
-            if tools:
-                fallback_llm = fallback_llm.bind_tools(tools)
-            return await fallback_llm.ainvoke(prompt_payload)
-            
-        # Re-raise error if it's a completely different non-quota runtime exception
-        raise e
+def get_vision_engine(gemini_key: str) -> ChatGoogleGenerativeAI:
+    """Executor: multimodal Gemini wrapper (gemini-2.5-flash)."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=gemini_key,
+        temperature=0.1,
+    )
 
+
+async def safe_groq_invoke(prompt_payload, groq_api_key: str, tools: list = None):
+    """
+    Groq ainvoke with exponential backoff for rate-limit (429) / high-demand (503) errors.
+    Used by planner_node and reviewer_node.
+    """
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            llm = get_text_engine(groq_api_key)
+            if tools:
+                llm = llm.bind_tools(tools)
+            return await llm.ainvoke(prompt_payload)
+
+        except Exception as e:
+            error_msg = str(e)
+            if (
+                "429" in error_msg or "rate_limit" in error_msg.lower()
+                or "503" in error_msg or "UNAVAILABLE" in error_msg
+            ) and attempt < max_retries - 1:
+                import asyncio
+                backoff = 2 ** attempt
+                print(f"\n[SYSTEM WARN] Groq Rate Limit (attempt {attempt+1}/{max_retries}). "
+                      f"Retrying in {backoff}s...")
+                sys.stdout.flush()
+                await asyncio.sleep(backoff)
+                continue
+            raise e
+
+
+async def safe_gemini_invoke(prompt_payload, gemini_api_key: str, tools: list = None):
+    """
+    Gemini ainvoke with exponential backoff for quota (429 / RESOURCE_EXHAUSTED) errors.
+    Used by executor_node for multimodal vision checkpoints.
+    """
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            llm = get_vision_engine(gemini_api_key)
+            if tools:
+                llm = llm.bind_tools(tools)
+            return await llm.ainvoke(prompt_payload)
+
+        except Exception as e:
+            error_msg = str(e)
+            if (
+                "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
+                or "503" in error_msg or "UNAVAILABLE" in error_msg
+            ) and attempt < max_retries - 1:
+                import asyncio
+                backoff = 4 ** attempt  # longer backoff for Gemini quota
+                print(f"\n[SYSTEM WARN] Gemini Quota Hit (attempt {attempt+1}/{max_retries}). "
+                      f"Retrying in {backoff}s...")
+                sys.stdout.flush()
+                await asyncio.sleep(backoff)
+                continue
+            raise e
+
+
+# Backward-compat alias — existing callers of safe_llm_invoke route to Groq.
+async def safe_llm_invoke(prompt_payload, groq_api_key: str, tools: list = None):
+    return await safe_groq_invoke(prompt_payload, groq_api_key, tools)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NODE FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def planner_node(state: GraphState) -> dict:
-    """
-    PLANNER NODE — Generates an initial investigation plan.
-
-    Receives the raw ticket text, extracted ticket metadata, and the approved
-    high-level plan from Engine 1 (Groq).  Produces a detailed, step-by-step
-    investigation plan grounded in the Odoo sandbox URL.
-    """
-    # --- Fetch historical resolution and routing patterns ---
-    odoo_module = state["ticket_info"].get("module", "")
-    error_message = state["ticket_info"].get("summary", "")
-    try:
-        similar_resolutions = memory_store.search_similar_resolutions(odoo_module, error_message)
-        nav_patterns = memory_store.get_all_navigation_patterns()
-        
-        memory_context = ""
-        if similar_resolutions:
-            memory_context += "PAST SIMILAR RESOLUTIONS (Use these to guide your plan):\n"
-            for res in similar_resolutions:
-                memory_context += f"- Ticket: {res['ticket_summary']}\n  Root Cause: {res['root_cause']}\n  Fix: {res['resolution_steps']}\n"
-        if nav_patterns:
-            memory_context += "\nKNOWN NAVIGATION PATTERNS:\n"
-            for pat in nav_patterns:
-                memory_context += f"- {pat['pattern_name']}: {pat['url_structure']}\n"
-    except Exception as e:
-        print(f"[Graph Memory] Failed to fetch memory context: {e}")
-        memory_context = ""
-
-    prompt = (
-        "You are an expert Odoo functional support analyst.\n"
-        "Given the following support ticket and an approved high-level plan, "
-        "produce a detailed step-by-step investigation plan to reproduce and "
-        "diagnose the reported issue inside the Odoo sandbox.\n\n"
-        f"DATABASE URL: {state['base_url']}\n\n"
-        f"TICKET TEXT:\n{state['ticket_text']}\n\n"
-        f"TICKET METADATA:\n{state['ticket_info']}\n\n"
-        f"APPROVED HIGH-LEVEL PLAN:\n{state['approved_plan']}\n\n"
-        f"{memory_context}\n"
-        "Output a numbered list of concrete browser actions (max 10 steps). "
-        "Each step must be a single, unambiguous action."
-    )
-
-    response = await safe_llm_invoke(prompt, state["gemini_api_key"])
-    plan_text = response.content if hasattr(response, "content") else str(response)
-
-    return {
-        "approved_plan": plan_text,
-        "attempt": 0,
-    }
+# Planner node removed. Planning is done authoritatively by Gemini/Gemma 3 prior to Graph execution.
 
 
 async def executor_node(state: GraphState, browser=None) -> dict:
     """
     EXECUTOR NODE — Inspects the live Odoo sandbox and executes the plan.
 
-    When a live BrowserManager is supplied, this node dynamically calls
-    browser tools (using LangChain bind_tools) to navigate, click, type, and
-    inspect the sandbox page. After each action, it automatically takes a
-    screenshot and feeds it back to the agent as multimodal context.
+    Uses Gemini (gemini-2.5-flash) for multimodal vision checkpoints:
+    after each major browser tool action a base64-encoded screenshot is
+    embedded as an image_url part in the next LLM message so Gemini can
+    visually validate the page state before choosing the next action.
+    Falls back to text-only mode if the browser page is unavailable.
     """
     current_attempt = state.get("attempt", 0) + 1
     feedback = state.get("feedback", "")
@@ -203,7 +180,8 @@ async def executor_node(state: GraphState, browser=None) -> dict:
         )
         message = HumanMessage(content=user_prompt)
         try:
-            response = await safe_llm_invoke([message], state["gemini_api_key"])
+            # Fallback uses Gemini (text-only path — no image parts)
+            response = await safe_gemini_invoke([message], state["gemini_api_key"])
             result_text = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             import traceback
@@ -219,61 +197,72 @@ async def executor_node(state: GraphState, browser=None) -> dict:
     tools = create_langchain_tools(browser.page, browser, state["base_url"])
 
     current_url = browser.page.url or state["base_url"]
-    screenshot_b64 = ""
-    try:
-        os.makedirs("output", exist_ok=True)
-        screenshot_path = f"output/graph_step_attempt_{current_attempt}_start_{int(time.time())}.png"
-        await browser.page.screenshot(path=screenshot_path, full_page=True)
-        if getattr(browser, "screenshots", None) is None:
-            browser.screenshots = []
-        if screenshot_path not in browser.screenshots:
-            browser.screenshots.append(screenshot_path)
-        with open(screenshot_path, "rb") as f:
-            screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
-    except Exception as e:
-        print(f"[EXECUTOR ERROR] Live initial screenshot capture failed: {e}")
 
-    user_prompt = (
-        "You are an expert Odoo support executor running inside a live browser sandbox.\n"
-        "You have access to browser tools to navigate, click, type, and inspect the Odoo database.\n"
-        "Inspect the attached initial screenshot of the current Odoo viewport and execute "
-        "the investigation plan against the real database state.\n\n"
-        "Your goal is to investigate, reproduce, and locate the error reported in the ticket.\n"
-        "Follow these rules:\n"
-        "1. Execute the plan step-by-step using the available tools.\n"
-        "2. Call tools as needed. After each action-taking tool (navigate_to_url, click_element, type_into_field), a new screenshot of the page will be automatically captured and fed back to you as visual context.\n"
-        "3. Avoid guessing or hallucinating database content. Use the tools to check everything.\n"
-        "4. If you hit an error, try to diagnose its cause.\n"
-        "5. Once you have completed your investigation or successfully reproduced the issue, output your final findings and stop calling tools. If you are finished, DO NOT call any more tools.\n\n"
-        f"CURRENT URL: {current_url}\n\n"
-        f"TICKET TEXT:\n{state['ticket_text']}\n\n"
-        f"INVESTIGATION PLAN:\n{state['approved_plan']}"
-        f"{feedback_section}"
-    )
+    # ── Helper: capture screenshot and return base64 string ───────────────────
+    async def _capture_screenshot(label: str) -> Optional[str]:
+        """Saves a PNG to disk and returns its base64 string for vision embedding."""
+        try:
+            os.makedirs("output", exist_ok=True)
+            path = f"output/graph_step_attempt_{current_attempt}_{label}_{int(time.time())}.png"
+            await browser.page.screenshot(path=path, full_page=True)
+            if getattr(browser, "screenshots", None) is None:
+                browser.screenshots = []
+            if path not in browser.screenshots:
+                browser.screenshots.append(path)
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            print(f"[EXECUTOR] Screenshot capture failed ({label}): {e}")
+            return None
 
-    messages = []
-    if screenshot_b64:
-        messages.append(HumanMessage(
-            content=[
-                {"type": "text", "text": user_prompt},
-                {
-                    "type": "image_url",
-                    "image_url": f"data:image/png;base64,{screenshot_b64}",
-                },
-            ]
-        ))
-    else:
-        messages.append(HumanMessage(content=user_prompt))
+    # ── Capture starting state with vision grounding ──────────────────────────
+    initial_b64 = await _capture_screenshot("start")
+
+    # Build the opening multimodal message (text + optional screenshot)
+    vision_intro_parts = [
+        {
+            "type": "text",
+            "text": (
+                "You are an expert Odoo support executor running inside a live browser sandbox.\n"
+                "You have access to browser tools to navigate, click, type, and inspect the Odoo database.\n"
+                "Execute the investigation plan against the real database state.\n\n"
+                "Your goal is to investigate, reproduce, and locate the error reported in the ticket.\n"
+                "Follow these rules:\n"
+                "1. Execute the plan step-by-step using the available tools.\n"
+                "2. Call tools as needed. After each action-taking tool (navigate_to_url, click_element, "
+                "type_into_field), results will be returned describing the page state.\n"
+                "3. Avoid guessing or hallucinating database content. Use the tools to verify everything.\n"
+                "4. If you encounter an error, diagnose its cause from the visual and text context.\n"
+                "5. Once investigation is complete or the issue is reproduced, output your final findings "
+                "and stop calling tools.\n\n"
+                f"CURRENT URL: {current_url}\n\n"
+                f"TICKET TEXT:\n{state['ticket_text']}\n\n"
+                f"INVESTIGATION PLAN:\n{state['approved_plan']}"
+                f"{feedback_section}"
+            ),
+        }
+    ]
+    if initial_b64:
+        vision_intro_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{initial_b64}"},
+        })
+        print(f"[EXECUTOR] Initial page screenshot embedded for Gemini vision grounding.")
+
+    messages = [HumanMessage(content=vision_intro_parts)]
 
     max_tool_calls = 15
     tool_calls_count = 0
     execution_log = []
     tool_map = {t.name: t for t in tools}
 
+    # Vision checkpoint: embed screenshot after these action tools
+    _VISION_CHECKPOINT_TOOLS = {"navigate_to_url", "click_element", "type_into_field"}
+
     response = None
     while tool_calls_count < max_tool_calls:
         try:
-            response = await safe_llm_invoke(messages, state["gemini_api_key"], tools=tools)
+            response = await safe_gemini_invoke(messages, state["gemini_api_key"], tools=tools)
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
@@ -317,21 +306,7 @@ async def executor_node(state: GraphState, browser=None) -> dict:
 
                 execution_log.append(log_entry)
 
-                # Auto-screenshot after execution
-                screenshot_b64_next = ""
-                try:
-                    screenshot_path = f"output/graph_step_attempt_{current_attempt}_tool_{tool_calls_count}_{int(time.time())}.png"
-                    await browser.page.screenshot(path=screenshot_path, full_page=True)
-                    if getattr(browser, "screenshots", None) is None:
-                        browser.screenshots = []
-                    if screenshot_path not in browser.screenshots:
-                        browser.screenshots.append(screenshot_path)
-                    with open(screenshot_path, "rb") as f:
-                        screenshot_b64_next = base64.b64encode(f.read()).decode("utf-8")
-                except Exception as e:
-                    print(f"[EXECUTOR ERROR] Post-tool screenshot capture failed: {e}")
-
-                # Append tool result to messages
+                # Append tool result as text ToolMessage
                 tool_message = ToolMessage(
                     tool_call_id=tool_call_id,
                     name=tool_name,
@@ -339,18 +314,27 @@ async def executor_node(state: GraphState, browser=None) -> dict:
                 )
                 messages.append(tool_message)
 
-                # Append new screenshot if successfully captured
-                if screenshot_b64_next:
-                    screenshot_feedback_msg = HumanMessage(
-                        content=[
-                            {"type": "text", "text": f"Here is the screenshot of the browser viewport after executing tool '{tool_name}':"},
+                # ── Vision Checkpoint ─────────────────────────────────────────
+                # After key browser-action tools, embed a fresh screenshot so
+                # Gemini can visually validate the new page state.
+                if tool_name in _VISION_CHECKPOINT_TOOLS:
+                    post_b64 = await _capture_screenshot(f"tool_{tool_calls_count}")
+                    if post_b64:
+                        vision_msg = HumanMessage(content=[
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"[VISION CHECKPOINT] Action '{tool_name}' completed. "
+                                    f"Current page screenshot follows — use it to decide the next step."
+                                ),
+                            },
                             {
                                 "type": "image_url",
-                                "image_url": f"data:image/png;base64,{screenshot_b64_next}",
+                                "image_url": {"url": f"data:image/png;base64,{post_b64}"},
                             },
-                        ]
-                    )
-                    messages.append(screenshot_feedback_msg)
+                        ])
+                        messages.append(vision_msg)
+                        print(f"[EXECUTOR] Vision checkpoint embedded after '{tool_name}' (tool #{tool_calls_count}).")
 
             # Continue the loop
             continue
@@ -403,7 +387,7 @@ async def reviewer_node(state: GraphState) -> dict:
         "was observed in the executor results."
     )
 
-    response = await safe_llm_invoke(prompt, state["gemini_api_key"])
+    response = await safe_groq_invoke(prompt, state["groq_api_key"])
     review_text = response.content if hasattr(response, "content") else str(response)
 
     # ── Parse the structured response ─────────────────────────────────────────
@@ -449,7 +433,7 @@ async def reviewer_node(state: GraphState) -> dict:
             "Ensure you strip away any dynamic code, raw JSON schemas, or token metrics."
         )
         try:
-            findings_response = await safe_llm_invoke(findings_prompt, state["gemini_api_key"])
+            findings_response = await safe_groq_invoke(findings_prompt, state["groq_api_key"])
             final_findings = findings_response.content if hasattr(findings_response, "content") else str(findings_response)
             final_findings = final_findings.strip()
         except Exception as e:
@@ -524,7 +508,7 @@ class ProjectSaneGraph:
         graph = ProjectSaneGraph()
         report = await graph.arun(
             ticket_text=..., ticket_info=..., base_url=...,
-            approved_plan=..., gemini_api_key=..., job_id=...,
+            approved_plan=..., groq_api_key=..., gemini_api_key=..., job_id=...,
         )
     """
 
@@ -533,9 +517,6 @@ class ProjectSaneGraph:
         self.browser = browser_instance
 
         builder = StateGraph(GraphState)
-
-        # Register nodes
-        builder.add_node("planner", planner_node)
 
         # Closure pass-through so the executor node receives the live browser
         # context. Must be async so LangGraph awaits the node coroutine.
@@ -546,8 +527,7 @@ class ProjectSaneGraph:
         builder.add_node("reviewer", reviewer_node)
 
         # Define edges
-        builder.set_entry_point("planner")
-        builder.add_edge("planner", "executor")
+        builder.set_entry_point("executor")
         builder.add_edge("executor", "reviewer")
 
         # Conditional routing from reviewer
@@ -568,7 +548,8 @@ class ProjectSaneGraph:
         ticket_info: dict,
         base_url: str,
         approved_plan: str,
-        gemini_api_key: str,
+        groq_api_key: str,
+        gemini_api_key: str = "",
         job_id: str = "",
     ) -> dict:
         """
@@ -584,6 +565,7 @@ class ProjectSaneGraph:
             "ticket_info": ticket_info,
             "base_url": base_url,
             "approved_plan": approved_plan,
+            "groq_api_key": groq_api_key,
             "gemini_api_key": gemini_api_key,
             "job_id": job_id,
             "attempt": 0,

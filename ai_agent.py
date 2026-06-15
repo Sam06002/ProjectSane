@@ -216,7 +216,10 @@ class AIAgent:
             '- "error_message": the exact error text if present, or null\n'
             '- "steps_to_reproduce": list of steps, or []\n'
             '- "check_runbot": true if standard behaviour needs verification, false otherwise\n'
-            '- "config_keys_to_check": list of config settings to check, or []'
+            '- "config_keys_to_check": list of config settings to check, or []\n'
+            '- "confidence": a float representing your diagnostic confidence (from 0.0 to 1.0)\n'
+            '- "severity": "low", "medium", or "high" based on business/user impact\n'
+            '- "likely_area": Odoo technical/settings sub-path or view location'
         )
         yield from self._groq_stream(
             system, ticket_text, max_tokens=1024,
@@ -227,28 +230,9 @@ class AIAgent:
         self, ticket_text: str, ticket_info: dict, run_logger=None
     ) -> Generator[str, None, None]:
         """
-        Engine 1 — Streaming investigation plan generation.
-        Yields tokens forming a numbered action list.
+        Deprecated - plan generation is handled by the authoritative Gemini/Gemma 3 planner.
         """
-        system = (
-            "You are an expert Odoo support analyst planning a browser investigation. "
-            "Think through the ticket carefully, then write a clear numbered investigation plan. "
-            "First share your reasoning about what could be causing the issue. "
-            "Then write the plan as a numbered list of concrete browser actions. "
-            "Maximum 8 steps. Each step must be a single specific action."
-        )
-        user = (
-            f"Ticket summary: {ticket_info.get('summary', '')}\n"
-            f"Module: {ticket_info.get('module', '')}\n"
-            f"Odoo version: {ticket_info.get('odoo_version', '')}\n"
-            f"Error: {ticket_info.get('error_message', '')}\n"
-            f"Steps to reproduce: {ticket_info.get('steps_to_reproduce', [])}\n\n"
-            "Write your reasoning and then the investigation plan."
-        )
-        yield from self._groq_stream(
-            system, user, max_tokens=512,
-            run_logger=run_logger, purpose="plan_generation_groq",
-        )
+        yield ""
 
     def analyse_ticket(self, ticket_text: str, run_logger=None) -> dict:
         """
@@ -268,6 +252,9 @@ class AIAgent:
                 '- "steps_to_reproduce": list of steps to reproduce the issue, or empty list []\n'
                 '- "check_runbot": true if standard Odoo behaviour needs verification, false otherwise\n'
                 '- "config_keys_to_check": list of configuration settings to check, or empty list []\n'
+                '- "confidence": a float representing your diagnostic confidence (from 0.0 to 1.0)\n'
+                '- "severity": "low", "medium", or "high" based on business/user impact\n'
+                '- "likely_area": Odoo technical/settings sub-path or view location\n'
                 "Return only the JSON object. No explanation, no markdown, no code fences."
             ),
             user=ticket_text,
@@ -288,6 +275,9 @@ class AIAgent:
             "steps_to_reproduce": [],
             "check_runbot": False,
             "config_keys_to_check": [],
+            "confidence": 1.0,
+            "severity": "medium",
+            "likely_area": None
         }
         # Try ```json ... ``` fence first
         match = re.search(r"```json\s*(.*?)\s*```", full_response, re.DOTALL)

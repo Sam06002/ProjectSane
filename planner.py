@@ -13,7 +13,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from schema import Plan
-from langchain_openai import ChatOpenAI
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +45,30 @@ class Planner:
         Calls Gemini 2.5-flash to generate a structured investigation plan.
         Leverages native schema constraint to guarantee perfect Pydantic compliance.
         """
+        import knowledge.modules
+        import knowledge.navigation
+        import knowledge.settings
+        import knowledge.issues
+        import json
+
+        # Format structured Odoo knowledge context for prompt grounding
+        knowledge_context = (
+            f"Odoo Module Metadata:\n{json.dumps(knowledge.modules.MODULES, indent=2)}\n\n"
+            f"Odoo Navigation Routes:\n{json.dumps(knowledge.navigation.NAVIGATION_PATHS, indent=2)}\n\n"
+            f"Known Odoo Configurations:\n{json.dumps(knowledge.settings.KNOWN_SETTINGS, indent=2)}\n\n"
+            f"Known Odoo Issues & Version Rules:\n{json.dumps(knowledge.issues.KNOWN_ISSUES, indent=2)}"
+        )
+
         user_message = (
             f"Database URL: {database_url}\n\n"
             f"TICKET:\n{ticket_text}\n\n"
-            "Generate a structured, deterministic JSON execution plan to investigate this issue."
+            f"STRUCTURED ODOO KNOWLEDGE CONTEXT:\n{knowledge_context}\n\n"
+            "Use the provided Odoo knowledge context to generate a structured, deterministic JSON execution plan to investigate this issue."
         )
 
         try:
             logger.info("Calling Gemini for structured plan generation...")
             
-            # Since generate_content in genai SDK is a synchronous network call, 
-            # we run it inside a thread pool using asyncio.to_thread to keep it async-safe.
-            # Implemented exponential backoff for 503 (high demand) and 429 (rate limit) errors.
             max_retries = 3
             response = None
             
@@ -81,36 +93,9 @@ class Planner:
                     logger.info("Parsing and validating structured Plan...")
                     plan = Plan.model_validate_json(content)
                     return plan
-
                 except Exception as e:
                     error_msg = str(e)
-                    # Quota limits or server unavailable
-                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                        print("\n[SYSTEM WARN] Quota Exhausted on Primary Channel in Planner. Initiating OpenRouter Failover Core...")
-                        openrouter_key = os.getenv("OPENROUTER_API_KEY")
-                        openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-                        
-                        if not openrouter_key:
-                            print("[SYSTEM ERROR] OpenRouter failover aborted: OPENROUTER_API_KEY is missing from environment.")
-                            raise e
-                        
-                        logger.info("Failing over to OpenRouter for structured plan generation...")
-                        fallback_llm = ChatOpenAI(
-                            model=openrouter_model,
-                            openai_api_key=openrouter_key,
-                            openai_api_base="https://openrouter.ai/api/v1",
-                            temperature=0.1,
-                            default_headers={
-                                "HTTP-Referer": "http://localhost:8000",
-                                "X-Title": "Project Sane v3 Support Agent Core",
-                            }
-                        )
-                        structured_llm = fallback_llm.with_structured_output(Plan)
-                        full_prompt = f"{SYSTEM_PROMPT}\n\n{user_message}"
-                        plan = await structured_llm.ainvoke(full_prompt)
-                        return plan
-
-                    if ("503" in error_msg or "UNAVAILABLE" in error_msg) and attempt < max_retries - 1:
+                    if ("503" in error_msg or "429" in error_msg or "UNAVAILABLE" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < max_retries - 1:
                         backoff = 2 ** attempt
                         logger.warning(f"Gemini API high demand (attempt {attempt+1}/{max_retries}). Retrying in {backoff}s... Error: {e}")
                         await asyncio.sleep(backoff)
