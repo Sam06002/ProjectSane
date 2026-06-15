@@ -196,6 +196,10 @@ class JobManager:
                         await page.goto(gateway_url, timeout=30000)
                         await ensure_demo_overlay(page)
                         await handle_support_login(page)
+                        try:
+                            await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
+                        except Exception:
+                            pass
                         
                         db_link = None
                         if "-support-" in active_target_url.lower():
@@ -240,6 +244,10 @@ class JobManager:
             if is_production:
                 await job.transition_to(RunState.DUPLICATING)
                 await handle_support_login(page)
+                try:
+                    await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
+                except Exception:
+                    pass
                 
                 if "/web/login" in page.url or "accounts.odoo.com" in page.url or "/support/login" in page.url:
                     raise AuthenticationError(
@@ -301,6 +309,10 @@ class JobManager:
                         except Exception:
                             pass
                         await handle_support_login(page)
+                        try:
+                            await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
+                        except Exception:
+                            pass
                         
                         dup_link = await find_duplicate_link()
                         if dup_link:
