@@ -1,0 +1,101 @@
+import os
+import logging
+from typing import Any, Optional
+from urllib.parse import urlparse
+from playwright.async_api import Page
+from exceptions import DuplicationError
+
+logger = logging.getLogger(__name__)
+
+def get_subdomain(url: str) -> str:
+    """Extracts the subdomain/first segment of the hostname from a URL."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or parsed.path or ""
+        # Handle case where scheme might be missing, e.g. "sane1.odoo.com"
+        if not hostname and "." in url:
+            hostname = url.split("/")[0]
+        return hostname.split(".")[0]
+    except Exception:
+        return ""
+
+def is_duplicate_database(url_or_text: str, prod_url: Optional[str] = None) -> bool:
+    """
+    Checks if a URL or text represents a duplicate database.
+    Looks for standard Odoo support/staging/duplicate subdomain patterns.
+    """
+    if not url_or_text:
+        return False
+        
+    url_lower = url_or_text.lower()
+    
+    # 1. Check for standard duplicate keywords in URL/text
+    indicators = ["-support-", "-neutralized-", "-copy-", "-staging-", "support-", "neutralized", "copy"]
+    has_indicators = any(ind in url_lower for ind in indicators)
+    
+    # 2. If prod_url is supplied, perform a more strict subdomain prefix check
+    if prod_url:
+        prod_sub = get_subdomain(prod_url).lower()
+        current_sub = get_subdomain(url_or_text).lower()
+        if current_sub == prod_sub:
+            return False
+        is_sub_match = current_sub.startswith(f"{prod_sub}-")
+        return is_sub_match or (prod_sub in url_lower and has_indicators)
+        
+    return has_indicators
+
+async def assert_duplicate_database(
+    current_url: str,
+    prod_url: str,
+    page: Optional[Page] = None,
+    run_logger: Optional[Any] = None
+) -> None:
+    """
+    Asserts that the current database URL is a valid duplicate/staging database.
+    If the original prod_url was classified as production, and current_url
+    is not a valid duplicate, raises DuplicationError.
+    
+    Logs identifiers and captures duplicate confirmation screenshot when successful.
+    """
+    # Verify if original URL is actually a production database
+    is_prod_original = "-support-" not in prod_url.lower() and not ("/odoo" in prod_url or "/web" in prod_url)
+    if not is_prod_original:
+        # Staging/local/duplicate URL directly provided as source - assertion is a no-op
+        return
+
+    prod_id = get_subdomain(prod_url)
+    curr_id = get_subdomain(current_url)
+
+    if not is_duplicate_database(current_url, prod_url):
+        log_msg = (
+            f"FATAL: Execution blocked! Attempted to run against production database.\n"
+            f" - Target URL: {current_url}\n"
+            f" - Production URL: {prod_url}"
+        )
+        logger.error(log_msg)
+        if run_logger:
+            run_logger.log_error(message=log_msg, context="production_safety_check")
+        raise DuplicationError(log_msg, "production_execution_blocked")
+
+    # Log confirmation details
+    log_msg = (
+        f"DUPLICATE CONFIRMED:\n"
+        f" - Production DB Identifier: {prod_id}\n"
+        f" - Duplicate DB Identifier: {curr_id}\n"
+        f" - Duplicate URL: {current_url}"
+    )
+    logger.info(log_msg)
+    if run_logger and hasattr(run_logger, "info"):
+        run_logger.info(log_msg)
+
+    # Capture duplicate confirmation screenshot
+    if page:
+        try:
+            screenshot_path = "logs/screenshots/duplicate_confirmed.png"
+            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+            await page.screenshot(path=screenshot_path)
+            logger.info(f"Duplicate confirmation screenshot saved: {screenshot_path}")
+            if run_logger and hasattr(run_logger, "screenshots"):
+                run_logger.screenshots.append(screenshot_path)
+        except Exception as e:
+            logger.warning(f"Failed to capture duplicate confirmation screenshot: {e}")

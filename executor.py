@@ -15,6 +15,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from schema import Action, ActionType, ExecutionResult, Step, Plan
 from stream_manager import StreamManager
+from db_utils import assert_duplicate_database
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +203,11 @@ ODOO_MODULE_ROUTES = {
 }
 
 class ExecutionEngine:
-    def __init__(self, page: Page, run_logger=None, sse_emitter=None):
+    def __init__(self, page: Page, run_logger=None, sse_emitter=None, prod_url: str = ""):
         self.page = page
         self._run_logger = run_logger
         self.emit = sse_emitter # Allows sending real-time UI logs
+        self.prod_url = prod_url
 
     async def human_like_glide_and_click(self, locator, selector_name: str = ""):
         """Smoothly slides the cursor across the screen before clicking."""
@@ -225,6 +227,10 @@ class ExecutionEngine:
 
     async def execute_plan(self, plan: Plan) -> list:
         """Iterates sequentially through the validated plan steps with 0 token cost."""
+        # Safety assertion: verify current database is not production before any execution begins
+        if self.prod_url:
+            await assert_duplicate_database(self.page.url, self.prod_url, page=self.page, run_logger=self._run_logger)
+
         results = []
         for step in plan.steps:
             # 1. Broadcast action start immediately to the UI Server-Sent Events stream

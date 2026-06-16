@@ -41,8 +41,7 @@ SELECTORS = {
         ".o_btn_duplicate",
         "button[name='duplicate']",
         "input[type='submit'][value*='Duplicate']",
-        "input[type='submit'][value*='Neutralize']",
-        "form button[type='submit']"
+        "input[type='submit'][value*='Neutralize']"
     ],
     "modal_confirm": [
         ".modal-dialog button:has-text('Ok')",

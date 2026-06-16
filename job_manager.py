@@ -18,6 +18,7 @@ from exceptions import (
 import odoo_selectors as selectors
 from browser_agent import ensure_demo_overlay, human_like_click_locator, human_like_fill
 from demo_mode import demo_settings
+from db_utils import assert_duplicate_database, is_duplicate_database
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +146,65 @@ class JobManager:
                 job.db_url if "/odoo" in job.db_url or "/web" in job.db_url else f"{job.db_url.rstrip('/')}/odoo"
             )
 
+            # Scan for duplicate safely
+            async def find_duplicate_link(target_url: Optional[str] = None):
+                from urllib.parse import urljoin
+                from db_utils import get_subdomain
+                links = page.locator("a")
+                count = await links.count()
+                target_sub = get_subdomain(target_url).lower() if target_url else None
+                for i in range(count):
+                    link = links.nth(i)
+                    href = await link.get_attribute("href") or ""
+                    if not href:
+                        continue
+                    abs_href = urljoin(page.url, href)
+                    if target_sub:
+                        if get_subdomain(abs_href).lower() == target_sub:
+                            return link
+                    else:
+                        if is_duplicate_database(abs_href, job.db_url):
+                            return link
+                return None
+
+            # Gateway page state helper to prevent race conditions
+            async def wait_for_gateway_page(page_obj, timeout_ms=10000) -> str:
+                start_time = time.time()
+                while time.time() - start_time < (timeout_ms / 1000.0):
+                    # 1. Check if reason input exists (needs support reason login)
+                    for sel in selectors.get_selector("reason_input"):
+                        try:
+                            if await page_obj.locator(sel).count() > 0:
+                                return "login"
+                        except Exception:
+                            pass
+                    # 2. Check if database link exists (already logged in)
+                    for sel in selectors.get_selector("db_link"):
+                        try:
+                            if await page_obj.locator(sel).count() > 0:
+                                return "portal"
+                        except Exception:
+                            pass
+                    # 3. Check if duplicate/neutralize button exists (specifically by text first)
+                    for text_sel in ["button:has-text('Duplicate')", "a:has-text('Duplicate')", "button:has-text('Neutralize')", "a:has-text('Neutralize')", "button:has-text('Create a copy')", "a:has-text('Create a copy')"]:
+                        try:
+                            if await page_obj.locator(text_sel).count() > 0:
+                                return "portal"
+                        except Exception:
+                            pass
+                    # 4. Check if duplicate link exists
+                    try:
+                        dup_link = await find_duplicate_link()
+                        if dup_link:
+                            return "portal"
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.2)
+                return "unknown"
+
             # Gateway reason login helper
             async def handle_support_login(page_obj):
-                if "/support/login" in page_obj.url:
+                if "/support/login" in page_obj.url or await page_obj.locator("input[name='reason'], textarea[name='reason']").count() > 0:
                     await job.emit_raw(StreamManager.emit_thinking(0, "Authentication", "Submitting support reason..."))
                     reason_input = None
                     reason_selector = None
@@ -182,6 +239,8 @@ class JobManager:
                     except Exception:
                         pass
 
+
+
             # Gateway cookie-sync helper
             async def authenticate_via_support_gateway(active_target_url):
                 parsed = urlparse(active_target_url)
@@ -195,26 +254,26 @@ class JobManager:
                         await job.emit_raw(StreamManager.emit_demo_thought("Opening support gateway"))
                         await page.goto(gateway_url, timeout=30000)
                         await ensure_demo_overlay(page)
-                        await handle_support_login(page)
-                        try:
-                            await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
-                        except Exception:
-                            pass
+                        
+                        # Wait for gateway page state
+                        page_state = await wait_for_gateway_page(page)
+                        if page_state == "login":
+                            await handle_support_login(page)
+                            page_state = await wait_for_gateway_page(page)
                         
                         db_link = None
-                        if "-support-" in active_target_url.lower():
-                            dup_subdomain = active_target_url.split("//")[-1].split(".")[0]
-                            for pattern in [f"a[href*='{dup_subdomain}']", f"a:has-text('{dup_subdomain}')"]:
-                                loc = page.locator(pattern)
-                                if await loc.count() > 0:
-                                    db_link = loc.first
-                                    break
+                        if "-support-" in active_target_url.lower() or is_duplicate_database(active_target_url, job.db_url):
+                            # We are trying to authenticate a duplicate database - find a duplicate link
+                            db_link = await find_duplicate_link(active_target_url)
+                        
                         if not db_link:
+                            # Fallback to general database link for production/normal DB
                             db_name = urlparse(job.db_url).hostname.split(".")[0]
                             for sel in selectors.get_selector("db_link"):
                                 if await page.locator(sel).count() > 0:
                                     db_link = page.locator(sel).first
                                     break
+                                    
                         if db_link:
                             await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
                             await human_like_click_locator(page, db_link)
@@ -235,6 +294,12 @@ class JobManager:
             await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
             await page.goto(target_nav_url, timeout=30000)
             await ensure_demo_overlay(page)
+            
+            page_state = await wait_for_gateway_page(page)
+            if page_state == "login":
+                await handle_support_login(page)
+                page_state = await wait_for_gateway_page(page)
+                
             if "/web/login" in page.url:
                 await obs.record_warning("Cookie synchronization initiated...", context="initial_navigation")
                 await authenticate_via_support_gateway(job.db_url)
@@ -243,11 +308,12 @@ class JobManager:
             active_db_url = job.db_url
             if is_production:
                 await job.transition_to(RunState.DUPLICATING)
-                await handle_support_login(page)
-                try:
-                    await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
-                except Exception:
-                    pass
+                
+                # Check gateway state again to be sure
+                page_state = await wait_for_gateway_page(page)
+                if page_state == "login":
+                    await handle_support_login(page)
+                    page_state = await wait_for_gateway_page(page)
                 
                 if "/web/login" in page.url or "accounts.odoo.com" in page.url or "/support/login" in page.url:
                     raise AuthenticationError(
@@ -256,15 +322,6 @@ class JobManager:
                         "support_auth"
                     )
                 
-                # Scan for duplicate
-                async def find_duplicate_link():
-                    prod_sub = urlparse(job.db_url).hostname.split(".")[0]
-                    for pattern in ["a[href*='support-']", "a[href*='neutralized']", "a[href*='copy']", f"a[href*='{prod_sub}-']"]:
-                        loc = page.locator(pattern)
-                        if await loc.count() > 0:
-                            return loc.first
-                    return None
-
                 dup_link = await find_duplicate_link()
                 if dup_link:
                     duplicate_chosen = await dup_link.get_attribute("href")
@@ -308,11 +365,12 @@ class JobManager:
                             await page.wait_for_load_state("load", timeout=8000)
                         except Exception:
                             pass
-                        await handle_support_login(page)
-                        try:
-                            await page.wait_for_url(lambda u: "/support/login" not in u, timeout=10000)
-                        except Exception:
-                            pass
+                        
+                        # Wait for gateway state during poll
+                        page_state = await wait_for_gateway_page(page)
+                        if page_state == "login":
+                            await handle_support_login(page)
+                            page_state = await wait_for_gateway_page(page)
                         
                         dup_link = await find_duplicate_link()
                         if dup_link:
@@ -445,8 +503,12 @@ class JobManager:
             await job.transition_to(RunState.EXECUTING)
             await job.emit_raw(StreamManager.emit_thinking(0, "Execution Initialization", "Plan validated. Launching local deterministic execution engine..."))
             
+            # Assert duplicate database safety checks before execution begins
+            await assert_duplicate_database(active_db_url, job.db_url, page=page, run_logger=run_log)
+            await assert_duplicate_database(page.url, job.db_url, page=page, run_logger=run_log)
+
             from executor import ExecutionEngine
-            engine = ExecutionEngine(page=page, run_logger=run_log, sse_emitter=_sse_emitter)
+            engine = ExecutionEngine(page=page, run_logger=run_log, sse_emitter=_sse_emitter, prod_url=job.db_url)
 
             # Run the 0-token local browser execution loop
             execution_results = await engine.execute_plan(plan)

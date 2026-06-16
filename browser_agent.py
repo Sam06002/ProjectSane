@@ -426,6 +426,14 @@ class BrowserManager:
         run_context: Optional[BrowserRunContext] = None,
     ) -> dict:
         """Runs LangGraph on either the run context or the global instance."""
+        # Safety verification before graph execution starts
+        from db_utils import assert_duplicate_database
+        active_page = run_context.page if run_context else self.page
+        if active_page:
+            await assert_duplicate_database(active_page.url, base_url, page=active_page)
+        else:
+            await assert_duplicate_database(base_url, base_url)
+
         from graph_agent import ProjectSaneGraph
 
         # Pass active run context as the browser_instance context
