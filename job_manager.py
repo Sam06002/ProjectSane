@@ -159,6 +159,8 @@ class JobManager:
                     if not href:
                         continue
                     abs_href = urljoin(page.url, href)
+                    if "_odoo" in abs_href.lower():
+                        continue
                     if target_sub:
                         if get_subdomain(abs_href).lower() == target_sub:
                             return link

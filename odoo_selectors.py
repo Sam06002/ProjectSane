@@ -24,6 +24,9 @@ SELECTORS = {
         "button:has-text('Ok')"
     ],
     "db_link": [
+        "xpath=//*[contains(text(), 'Current database')]/a",
+        "xpath=//div[contains(., 'Current database')]/a",
+        "div:has-text('Current database') a",
         "a:has-text('database')",
         "a:has-text('enter')",
         "a:has-text('connect')",
