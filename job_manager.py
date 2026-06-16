@@ -153,20 +153,31 @@ class JobManager:
                 links = page.locator("a")
                 count = await links.count()
                 target_sub = get_subdomain(target_url).lower() if target_url else None
+                
+                candidate_links = []
                 for i in range(count):
                     link = links.nth(i)
                     href = await link.get_attribute("href") or ""
                     if not href:
                         continue
                     abs_href = urljoin(page.url, href)
-                    if "_odoo" in abs_href.lower():
-                        continue
+                    
                     if target_sub:
+                        # Exclude self-referencing support page links on the duplicate tools page itself
+                        if "_odoo" in abs_href.lower() and "/_odoo/support" in page.url:
+                            continue
                         if get_subdomain(abs_href).lower() == target_sub:
                             return link
                     else:
                         if is_duplicate_database(abs_href, job.db_url):
+                            candidate_links.append((link, abs_href))
+                            
+                if not target_sub and candidate_links:
+                    # Prefer "Support Page" links containing "_odoo/support"
+                    for link, abs_href in candidate_links:
+                        if "/_odoo/support" in abs_href.lower() or "_odoo" in abs_href.lower():
                             return link
+                    return candidate_links[0][0]
                 return None
 
             # Gateway page state helper to prevent race conditions
