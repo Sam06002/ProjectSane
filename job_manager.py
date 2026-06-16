@@ -443,23 +443,15 @@ class JobManager:
 
             # ── 5. Executing ──────────────────────────────────────────────────
             await job.transition_to(RunState.EXECUTING)
-            await job.emit_raw(StreamManager.emit_demo_thought("Starting approved execution plan"))
-            # Legacy placeholder high-level plan string pass for investigate_with_graph
-            plan_str = f"Plan: {plan.summary}\n" + "\n".join([f"{s.id}. {s.intent}" for s in plan.steps])
+            await job.emit_raw(StreamManager.emit_thinking(0, "Execution Initialization", "Plan validated. Launching local deterministic execution engine..."))
             
-            graph_context = await browser_manager.investigate_with_graph(
-                base_url=active_db_url,
-                ticket_text=job.ticket_text,
-                ticket_info=ticket_info,
-                approved_plan=plan_str,
-                groq_api_key=groq_key,
-                gemini_api_key=gemini_key,
-                job_id=job.run_id,
-                run_context=run_context
-            )
-            
-            graph_findings = graph_context.get("final_findings", "") if isinstance(graph_context, dict) else ""
-            await job.emit_raw(StreamManager.emit_thinking(0, "Graph Complete", "LangGraph finished.", simple_draft=graph_findings))
+            from executor import ExecutionEngine
+            engine = ExecutionEngine(page=page, run_logger=run_log, sse_emitter=_sse_emitter)
+
+            # Run the 0-token local browser execution loop
+            execution_results = await engine.execute_plan(plan)
+
+            await job.emit_raw(StreamManager.emit_thinking(0, "Execution Complete", "Local browser navigation complete. Finalizing resolution guide..."))
 
             # ── 6. Reporting ──────────────────────────────────────────────────
             await job.transition_to(RunState.REPORTING)
@@ -467,9 +459,11 @@ class JobManager:
             monitor_summary = obs.finalise()
             log_path = run_log.save()
 
-            clean_resolution = graph_context.get("feedback") or "Graph execution finished."
-            raw_execution_findings = graph_context.get("final_report") or "No technical trace generated."
-            error_is_reproduced = graph_context.get("is_reproduced", False)
+            # Adapt execution results for the legacy reporting code
+            error_is_reproduced = all(r.success for r in execution_results) if execution_results else False
+            clean_resolution = "Local execution completed. See detailed findings."
+            raw_execution_findings = "\\n".join([f"Step {r.step_id}: {'Success' if r.success else 'Failed'} - {r.message}" for r in execution_results])
+            graph_findings = ""
 
             from doc_writer import generate_report
             generated_report_docx = generate_report(
