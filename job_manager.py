@@ -332,6 +332,10 @@ class JobManager:
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", f"Found existing duplicate: {duplicate_chosen}. Entering..."))
                     await job.emit_raw(StreamManager.emit_demo_thought("Opening existing duplicate database"))
                     await human_like_click_locator(page, dup_link)
+                    try:
+                        await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=15000)
+                    except Exception as e:
+                        logger.warning(f"Timeout waiting for duplicate URL after clicking dup_link: {e}")
                 else:
                     # Setup handler to automatically accept confirm/alert dialogs
                     async def handle_dialog(dialog):
@@ -409,6 +413,10 @@ class JobManager:
                             duplicate_chosen = await dup_link.get_attribute("href")
                             await job.emit_raw(StreamManager.emit_demo_thought("Opening completed duplicate"))
                             await human_like_click_locator(page, dup_link)
+                            try:
+                                await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=15000)
+                            except Exception as e:
+                                logger.warning(f"Timeout waiting for duplicate URL during poll: {e}")
                             found_dup = True
                             break
                     
