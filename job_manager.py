@@ -149,10 +149,10 @@ class JobManager:
             # Scan for duplicate safely
             async def find_duplicate_link(target_url: Optional[str] = None):
                 from urllib.parse import urljoin
-                from db_utils import get_subdomain
+                from db_utils import get_database_name
                 links = page.locator("a")
                 count = await links.count()
-                target_sub = get_subdomain(target_url).lower() if target_url else None
+                target_db = get_database_name(target_url).lower() if target_url else None
                 
                 candidate_links = []
                 for i in range(count):
@@ -162,23 +162,35 @@ class JobManager:
                         continue
                     abs_href = urljoin(page.url, href)
                     
-                    if target_sub:
+                    if target_db:
                         # Exclude self-referencing support page links on the duplicate tools page itself
                         if "_odoo" in abs_href.lower() and "/_odoo/support" in page.url:
                             continue
-                        if get_subdomain(abs_href).lower() == target_sub:
+                        if get_database_name(abs_href).lower() == target_db:
                             return link
                     else:
                         if is_duplicate_database(abs_href, job.db_url):
                             candidate_links.append((link, abs_href))
                             
-                if not target_sub and candidate_links:
+                if not target_db and candidate_links:
                     # Prefer "Support Page" links containing "_odoo/support"
                     for link, abs_href in candidate_links:
                         if "/_odoo/support" in abs_href.lower() or "_odoo" in abs_href.lower():
                             return link
                     return candidate_links[0][0]
                 return None
+
+            # Custom helper to poll and wait for URL to match a duplicate database pattern
+            async def wait_for_duplicate_url(timeout_ms: int):
+                start_t = time.time()
+                timeout_s = timeout_ms / 1000.0
+                while time.time() - start_t < timeout_s:
+                    if is_duplicate_database(page.url, job.db_url):
+                        return
+                    await asyncio.sleep(0.5)
+                # Final check after loop
+                if not is_duplicate_database(page.url, job.db_url):
+                    raise asyncio.TimeoutError(f"URL '{page.url}' is not a duplicate database of '{job.db_url}'")
 
             # Gateway page state helper to prevent race conditions
             async def wait_for_gateway_page(page_obj, timeout_ms=10000) -> str:
@@ -344,7 +356,7 @@ class JobManager:
                     await job.emit_raw(StreamManager.emit_demo_thought("Opening existing duplicate database"))
                     await human_like_click_locator(page, dup_link)
                     try:
-                        await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=15000)
+                        await wait_for_duplicate_url(15000)
                     except Exception as e:
                         logger.warning(f"Timeout waiting for duplicate URL after clicking dup_link: {e}")
                 else:
@@ -402,7 +414,7 @@ class JobManager:
                     # Wait for duplication to complete and redirect to the duplicate database
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", "Duplication process started. Waiting for redirection to the duplicate database..."))
                     try:
-                        await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=180000)
+                        await wait_for_duplicate_url(180000)
                     except Exception as e:
                         raise DuplicationError(f"Database copy failed or timed out: redirection to duplicate database did not occur. Error: {e}", "db_duplication")
 

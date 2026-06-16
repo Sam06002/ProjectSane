@@ -19,6 +19,25 @@ def get_subdomain(url: str) -> str:
     except Exception:
         return ""
 
+def get_database_name(url: str) -> str:
+    """
+    Extracts the Odoo database name from a URL.
+    Checks the 'db' query parameter first, falling back to the subdomain of the hostname.
+    """
+    try:
+        parsed = urlparse(url)
+        from urllib.parse import parse_qs
+        qs = parse_qs(parsed.query)
+        if "db" in qs and qs["db"]:
+            return qs["db"][0]
+            
+        hostname = parsed.hostname or parsed.path or ""
+        if not hostname and "." in url:
+            hostname = url.split("/")[0]
+        return hostname.split(".")[0]
+    except Exception:
+        return ""
+
 def is_duplicate_database(url_or_text: str, prod_url: Optional[str] = None) -> bool:
     """
     Checks if a URL or text represents a duplicate database.
@@ -33,14 +52,14 @@ def is_duplicate_database(url_or_text: str, prod_url: Optional[str] = None) -> b
     indicators = ["-support-", "-neutralized-", "-copy-", "-staging-", "support-", "neutralized", "copy"]
     has_indicators = any(ind in url_lower for ind in indicators)
     
-    # 2. If prod_url is supplied, perform a more strict subdomain prefix check
+    # 2. If prod_url is supplied, perform a more strict check
     if prod_url:
-        prod_sub = get_subdomain(prod_url).lower()
-        current_sub = get_subdomain(url_or_text).lower()
-        if current_sub == prod_sub:
+        prod_db = get_database_name(prod_url).lower()
+        current_db = get_database_name(url_or_text).lower()
+        if current_db == prod_db:
             return False
-        is_sub_match = current_sub.startswith(f"{prod_sub}-")
-        return is_sub_match or (prod_sub in url_lower and has_indicators)
+        is_db_match = current_db.startswith(f"{prod_db}-")
+        return is_db_match or (prod_db in url_lower and has_indicators)
         
     return has_indicators
 
