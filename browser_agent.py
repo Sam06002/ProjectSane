@@ -166,7 +166,7 @@ async def human_like_click(page: Page, selector: str, timeout: int = 10000) -> N
 
     if DEMO_MODE:
         await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
-    await page.mouse.click(target_x, target_y)
+    await element.click(timeout=timeout)
     await demo_pause(page)
 
 
@@ -213,7 +213,7 @@ async def human_like_click_locator(page: Page, locator, timeout: int = 10000) ->
             DEMO_HIGHLIGHT_MS,
         )
         await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
-    await page.mouse.click(target_x, target_y)
+    await locator.click(timeout=timeout)
     await demo_pause(page)
 
 
@@ -363,6 +363,19 @@ class BrowserManager:
             raise BrowserError("Browser not initialized.", "create_run_context")
 
         default_context = self.browser.contexts[0]
+        # Clean up any leftover duplicate/support pages from previous runs to prevent tab clutter
+        try:
+            from db_utils import is_duplicate_database
+            for p in list(default_context.pages):
+                url = p.url
+                if len(default_context.pages) <= 1:
+                    break
+                if "/_odoo/support" in url or is_duplicate_database(url) or "sane1-support" in url or "-support-" in url:
+                    print(f"[Browser] Closing leftover page from previous run: {url}")
+                    await p.close()
+        except Exception as e:
+            print(f"[Browser] Error cleaning up leftover pages: {e}")
+
         cookies = []
         try:
             cookies = await default_context.cookies()

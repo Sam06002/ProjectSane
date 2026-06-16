@@ -52,8 +52,8 @@ def is_duplicate_database(url_or_text: str, prod_url: Optional[str] = None) -> b
     indicators = ["-support-", "-neutralized-", "-copy-", "-staging-", "support-", "neutralized", "copy"]
     has_indicators = any(ind in url_lower for ind in indicators)
     
-    # 2. If prod_url is supplied, perform a more strict check
-    if prod_url:
+    # 2. If prod_url is supplied and is not itself a duplicate, perform a more strict check
+    if prod_url and not is_duplicate_database(prod_url):
         prod_db = get_database_name(prod_url).lower()
         current_db = get_database_name(url_or_text).lower()
         if current_db == prod_db:
@@ -77,13 +77,13 @@ async def assert_duplicate_database(
     Logs identifiers and captures duplicate confirmation screenshot when successful.
     """
     # Verify if original URL is actually a production database
-    is_prod_original = "-support-" not in prod_url.lower() and not ("/odoo" in prod_url or "/web" in prod_url)
+    is_prod_original = not is_duplicate_database(prod_url)
     if not is_prod_original:
         # Staging/local/duplicate URL directly provided as source - assertion is a no-op
         return
 
-    prod_id = get_subdomain(prod_url)
-    curr_id = get_subdomain(current_url)
+    prod_id = get_database_name(prod_url)
+    curr_id = get_database_name(current_url)
 
     if not is_duplicate_database(current_url, prod_url):
         log_msg = (

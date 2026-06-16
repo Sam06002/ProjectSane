@@ -13,6 +13,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from schema import Plan
+from langchain_openai import ChatOpenAI
 
 
 logger = logging.getLogger(__name__)
@@ -94,13 +95,46 @@ class Planner:
                     plan = Plan.model_validate_json(content)
                     return plan
                 except Exception as e:
-                    error_msg = str(e)
-                    if ("503" in error_msg or "429" in error_msg or "UNAVAILABLE" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < max_retries - 1:
-                        backoff = 2 ** attempt
-                        logger.warning(f"Gemini API high demand (attempt {attempt+1}/{max_retries}). Retrying in {backoff}s... Error: {e}")
-                        await asyncio.sleep(backoff)
-                        continue
-                    raise  # Re-raise if out of retries or it's a different error
+                    print(f"\n[SYSTEM WARN] Primary Channel in Planner failed: {e}. Initiating Failover Core...")
+                    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+                    groq_key = os.getenv("GROQ_API_KEY")
+                    
+                    if not openrouter_key and not groq_key:
+                        print("[SYSTEM ERROR] Failover aborted: both OPENROUTER_API_KEY and GROQ_API_KEY are missing from environment. Re-raising primary error.")
+                        raise e
+                    
+                    try:
+                        if openrouter_key:
+                            logger.info("Failing over to OpenRouter for structured plan generation...")
+                            openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+                            fallback_llm = ChatOpenAI(
+                                model=openrouter_model,
+                                openai_api_key=openrouter_key,
+                                openai_api_base="https://openrouter.ai/api/v1",
+                                temperature=0.1,
+                                default_headers={
+                                    "HTTP-Referer": "http://localhost:8000",
+                                    "X-Title": "Project Sane v3 Support Agent Core",
+                                }
+                            )
+                        else:
+                            logger.info("Failing over to Groq for structured plan generation...")
+                            groq_model = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
+                            fallback_llm = ChatOpenAI(
+                                model=groq_model,
+                                openai_api_key=groq_key,
+                                openai_api_base="https://api.groq.com/openai/v1",
+                                temperature=0.1,
+                            )
+                        
+                        method = None if openrouter_key else "function_calling"
+                        structured_llm = fallback_llm.with_structured_output(Plan, method=method)
+                        full_prompt = f"{SYSTEM_PROMPT}\n\n{user_message}"
+                        plan = await structured_llm.ainvoke(full_prompt)
+                        return plan
+                    except Exception as fallback_err:
+                        print(f"[SYSTEM ERROR] Failover failed: {fallback_err}. Re-raising primary error.")
+                        raise e
 
         except Exception as e:
             logger.error(f"Gemini plan generation failed: {e}")

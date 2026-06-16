@@ -76,11 +76,11 @@ class Step(BaseModel):
     """A single numbered step in the execution plan."""
 
     id: int = Field(ge=1, le=50)
-    intent: str = Field(min_length=5, max_length=256)
-    reasoning: str = Field(min_length=5, max_length=512)
+    intent: str = Field(min_length=5, max_length=512)
+    reasoning: str = Field(min_length=5, max_length=1024)
     action: Action
-    expected_outcome: str = Field(min_length=5, max_length=256)
-    fallback: str = Field(min_length=5, max_length=256)
+    expected_outcome: str = Field(min_length=5, max_length=512)
+    fallback: str = Field(min_length=5, max_length=512)
 
 
 class Plan(BaseModel):

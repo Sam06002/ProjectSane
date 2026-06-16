@@ -141,9 +141,11 @@ class JobManager:
             page = run_context.page
 
             # Check if production target
-            is_production = "-support-" not in job.db_url.lower() and not ("/odoo" in job.db_url or "/web" in job.db_url)
-            target_nav_url = f"{job.db_url.rstrip('/')}/_odoo/support" if is_production else (
-                job.db_url if "/odoo" in job.db_url or "/web" in job.db_url else f"{job.db_url.rstrip('/')}/odoo"
+            is_production = not is_duplicate_database(job.db_url)
+            parsed_job_url = urlparse(job.db_url)
+            job_base_url = f"{parsed_job_url.scheme}://{parsed_job_url.netloc}"
+            target_nav_url = f"{job_base_url}/_odoo/support" if is_production else (
+                job.db_url if "/odoo" in job.db_url or "/web" in job.db_url else f"{job_base_url}/odoo"
             )
 
             # Scan for duplicate safely
@@ -162,11 +164,17 @@ class JobManager:
                         continue
                     abs_href = urljoin(page.url, href)
                     
+                    # Exclude self-referencing duplicate links to the current page/database we are already on
+                    db_name_href = get_database_name(abs_href).lower()
+                    db_name_page = get_database_name(page.url).lower()
+                    if db_name_href and db_name_href == db_name_page:
+                        continue
+                    
                     if target_db:
                         # Exclude self-referencing support page links on the duplicate tools page itself
                         if "_odoo" in abs_href.lower() and "/_odoo/support" in page.url:
                             continue
-                        if get_database_name(abs_href).lower() == target_db:
+                        if db_name_href == target_db:
                             return link
                     else:
                         if is_duplicate_database(abs_href, job.db_url):
@@ -179,6 +187,14 @@ class JobManager:
                             return link
                     return candidate_links[0][0]
                 return None
+
+            # Click helper to force navigation in the same tab instead of opening a new window/tab
+            async def click_in_same_tab(locator):
+                try:
+                    await locator.evaluate("el => { el.removeAttribute('target'); if (el.form) el.form.removeAttribute('target'); }")
+                except Exception as e:
+                    logger.debug(f"Failed to strip target from element: {e}")
+                await human_like_click_locator(page, locator)
 
             # Custom helper to poll and wait for URL to match a duplicate database pattern
             async def wait_for_duplicate_url(timeout_ms: int):
@@ -303,7 +319,7 @@ class JobManager:
                                     
                         if db_link:
                             await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
-                            await human_like_click_locator(page, db_link)
+                            await click_in_same_tab(db_link)
                             try:
                                 await page.wait_for_load_state("load", timeout=10000)
                             except Exception:
@@ -354,7 +370,7 @@ class JobManager:
                     duplicate_chosen = await dup_link.get_attribute("href")
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", f"Found existing duplicate: {duplicate_chosen}. Entering..."))
                     await job.emit_raw(StreamManager.emit_demo_thought("Opening existing duplicate database"))
-                    await human_like_click_locator(page, dup_link)
+                    await click_in_same_tab(dup_link)
                     try:
                         await wait_for_duplicate_url(15000)
                     except Exception as e:
@@ -399,7 +415,7 @@ class JobManager:
 
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", "Creating database copy..."))
                     await job.emit_raw(StreamManager.emit_demo_thought("Creating database copy"))
-                    await human_like_click_locator(page, dup_btn)
+                    await click_in_same_tab(dup_btn)
                     
                     # Check confirmation modal
                     try:
@@ -423,9 +439,9 @@ class JobManager:
                     await page.wait_for_load_state("load", timeout=15000)
                 except Exception:
                     pass
-                duplicate_base = f"{urlparse(page.url).scheme}://{urlparse(page.url).netloc}"
-                await authenticate_via_support_gateway(duplicate_base)
-                active_db_url = duplicate_base
+                # Keep the full URL (including query parameters like ?db=...) to preserve the database identifier
+                active_db_url = page.url
+                await authenticate_via_support_gateway(active_db_url)
                 obs.db_url = active_db_url
 
             # Transition Frontend to Backend dashboard
