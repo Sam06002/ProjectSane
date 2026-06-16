@@ -333,6 +333,34 @@ class JobManager:
                     await job.emit_raw(StreamManager.emit_demo_thought("Opening existing duplicate database"))
                     await human_like_click_locator(page, dup_link)
                 else:
+                    # Setup handler to automatically accept confirm/alert dialogs
+                    async def handle_dialog(dialog):
+                        logger.info(f"Gateway Dialog: {dialog.type} - '{dialog.message}'. Accepting...")
+                        await dialog.accept()
+                    page.on("dialog", lambda d: asyncio.create_task(handle_dialog(d)))
+
+                    # Shorten duplicate name if too long or fill if empty
+                    name_input = None
+                    for sel in ["input[name='name']", "input[name='duplicate_name']", "input:near(:text('Duplicate Name'))"]:
+                        try:
+                            if await page.locator(sel).count() > 0:
+                                name_input = page.locator(sel).first
+                                break
+                        except Exception:
+                            pass
+                    if name_input:
+                        current_val = await name_input.input_value()
+                        if not current_val:
+                            prod_sub = urlparse(job.db_url).hostname.split(".")[0]
+                            current_val = f"{prod_sub}-supp"
+                        
+                        if len(current_val) > 28:
+                            new_val = current_val[:20].rstrip("-") + "-supp"
+                            await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", f"Shortening duplicate database name from '{current_val}' to '{new_val}' to prevent 'name too long' error..."))
+                            await name_input.fill(new_val)
+                        elif not await name_input.input_value():
+                            await name_input.fill(current_val)
+
                     # Click Duplicate button
                     dup_btn = None
                     for sel in selectors.get_selector("duplicate_button"):
