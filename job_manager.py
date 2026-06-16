@@ -174,12 +174,14 @@ class JobManager:
                 start_time = time.time()
                 while time.time() - start_time < (timeout_ms / 1000.0):
                     # 1. Check if reason input exists (needs support reason login)
-                    for sel in selectors.get_selector("reason_input"):
-                        try:
-                            if await page_obj.locator(sel).count() > 0:
-                                return "login"
-                        except Exception:
-                            pass
+                    # Strictly require URL to contain /support/login to avoid false matches on tools page
+                    if "/support/login" in page_obj.url:
+                        for sel in selectors.get_selector("reason_input"):
+                            try:
+                                if await page_obj.locator(sel).count() > 0:
+                                    return "login"
+                            except Exception:
+                                pass
                     # 2. Check if database link exists (already logged in)
                     for sel in selectors.get_selector("db_link"):
                         try:
@@ -206,7 +208,7 @@ class JobManager:
 
             # Gateway reason login helper
             async def handle_support_login(page_obj):
-                if "/support/login" in page_obj.url or await page_obj.locator("input[name='reason'], textarea[name='reason']").count() > 0:
+                if "/support/login" in page_obj.url:
                     await job.emit_raw(StreamManager.emit_thinking(0, "Authentication", "Submitting support reason..."))
                     reason_input = None
                     reason_selector = None
