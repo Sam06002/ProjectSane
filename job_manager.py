@@ -388,40 +388,12 @@ class JobManager:
                     except Exception:
                         pass
                     
-                    # Poll for duplication completed
-                    found_dup = False
-                    poll_start = time.time()
-                    for poll_attempt in range(36):
-                        await asyncio.sleep(5)
-                        await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", f"Polling duplication progress ({int(time.time() - poll_start)}s elapsed)..."))
-                        
-                        try:
-                            await page.goto(target_nav_url, timeout=15000)
-                            await ensure_demo_overlay(page)
-                            await page.wait_for_load_state("load", timeout=8000)
-                        except Exception:
-                            pass
-                        
-                        # Wait for gateway state during poll
-                        page_state = await wait_for_gateway_page(page)
-                        if page_state == "login":
-                            await handle_support_login(page)
-                            page_state = await wait_for_gateway_page(page)
-                        
-                        dup_link = await find_duplicate_link()
-                        if dup_link:
-                            duplicate_chosen = await dup_link.get_attribute("href")
-                            await job.emit_raw(StreamManager.emit_demo_thought("Opening completed duplicate"))
-                            await human_like_click_locator(page, dup_link)
-                            try:
-                                await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=15000)
-                            except Exception as e:
-                                logger.warning(f"Timeout waiting for duplicate URL during poll: {e}")
-                            found_dup = True
-                            break
-                    
-                    if not found_dup:
-                        raise DuplicationError("Database copy timed out on support gateway.", "db_duplication")
+                    # Wait for duplication to complete and redirect to the duplicate database
+                    await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", "Duplication process started. Waiting for redirection to the duplicate database..."))
+                    try:
+                        await page.wait_for_url(lambda u: is_duplicate_database(u, job.db_url), timeout=180000)
+                    except Exception as e:
+                        raise DuplicationError(f"Database copy failed or timed out: redirection to duplicate database did not occur. Error: {e}", "db_duplication")
 
                 # Sync support gateway on duplicate database base
                 try:
