@@ -148,6 +148,43 @@ class JobManager:
                 job.db_url if "/odoo" in job.db_url or "/web" in job.db_url else f"{job_base_url}/odoo"
             )
 
+            # Gateway manual login helper
+            async def handle_manual_login_if_needed(page_obj, timeout_sec=120):
+                def is_on_login_page(url):
+                    u = url.lower()
+                    from urllib.parse import urlparse as _urlparse
+                    parsed = _urlparse(u)
+                    path = parsed.path
+                    netloc = parsed.netloc
+                    
+                    if "accounts.odoo.com" in netloc:
+                        return True
+                    if "/web/login" in path or "/support/login" in path:
+                        return True
+                    path_parts = path.strip("/").split("/")
+                    if "login" in path_parts:
+                        return True
+                    return False
+
+                if is_on_login_page(page_obj.url):
+                    await job.emit_raw(StreamManager.emit_thinking(0, "Authentication Required", 
+                        "Manual login required. Please enter your credentials in the Chrome window."))
+                    await job.emit_raw(StreamManager.emit_demo_thought(
+                        "Waiting for manual user login in Chrome window..."))
+                    logger.info("Detected login page. Waiting for user to manually log in...")
+                    
+                    start_time = time.time()
+                    while time.time() - start_time < timeout_sec:
+                        await asyncio.sleep(1.0)
+                        current_url = page_obj.url
+                        if not is_on_login_page(current_url):
+                            if "/web" in current_url or "/odoo" in current_url or "_odoo/support" in current_url:
+                                logger.info(f"User successfully logged in! Current URL: {current_url}")
+                                await job.emit_raw(StreamManager.emit_thinking(0, "Authenticated", "Manual login detected. Continuing..."))
+                                return True
+                    
+                    raise AuthenticationError("Manual login timed out. Please run again and log in within 120 seconds.", "manual_login_timeout")
+
             # Scan for duplicate safely
             async def find_duplicate_link(target_url: Optional[str] = None):
                 from urllib.parse import urljoin
@@ -297,6 +334,7 @@ class JobManager:
                         await job.emit_raw(StreamManager.emit_demo_thought("Opening support gateway"))
                         await page.goto(gateway_url, timeout=30000)
                         await ensure_demo_overlay(page)
+                        await handle_manual_login_if_needed(page)
                         
                         # Wait for gateway page state
                         page_state = await wait_for_gateway_page(page)
@@ -331,12 +369,15 @@ class JobManager:
                         logger.warning(f"Support gateway authentication failed: {e}")
                 
                 if not auth_success and "/web/login" in page.url:
-                    raise AuthenticationError("Gateway redirection failed: browser stuck at login page.", "support_auth")
+                    await handle_manual_login_if_needed(page)
+                    if "/web/login" in page.url:
+                        raise AuthenticationError("Gateway redirection failed: browser stuck at login page.", "support_auth")
 
             # Navigate to sandbox
             await job.emit_raw(StreamManager.emit_demo_thought("Opening customer database"))
             await page.goto(target_nav_url, timeout=30000)
             await ensure_demo_overlay(page)
+            await handle_manual_login_if_needed(page)
             
             page_state = await wait_for_gateway_page(page)
             if page_state == "login":
@@ -359,11 +400,13 @@ class JobManager:
                     page_state = await wait_for_gateway_page(page)
                 
                 if "/web/login" in page.url or "accounts.odoo.com" in page.url or "/support/login" in page.url:
-                    raise AuthenticationError(
-                        "Gateway authentication failed: browser stuck at login page. "
-                        "Please ensure you are actively logged into Odoo on Chrome Profile 3 to sync cookies.",
-                        "support_auth"
-                    )
+                    await handle_manual_login_if_needed(page)
+                    if "/web/login" in page.url or "accounts.odoo.com" in page.url or "/support/login" in page.url:
+                        raise AuthenticationError(
+                            "Gateway authentication failed: browser stuck at login page. "
+                            "Please ensure you are actively logged into Odoo on Chrome Profile 3 to sync cookies.",
+                            "support_auth"
+                        )
                 
                 dup_link = await find_duplicate_link()
                 if dup_link:

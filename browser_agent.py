@@ -54,32 +54,46 @@ DEMO_OVERLAY_SCRIPT = """
   style.id = 'project-sane-demo-style';
   style.textContent = `
     #project-sane-cursor {
-      position: fixed; left: 24px; top: 24px; width: 22px; height: 22px;
-      z-index: 2147483647; pointer-events: none; transform: translate(-2px, -2px);
-      filter: drop-shadow(0 7px 14px rgba(0,0,0,.28));
-    }
-    #project-sane-cursor::before {
-      content: ''; position: absolute; left: 0; top: 0; width: 0; height: 0;
-      border-left: 14px solid #0ea5e9; border-top: 9px solid transparent;
-      border-bottom: 9px solid transparent; transform: rotate(-18deg);
-    }
-    #project-sane-cursor::after {
-      content: ''; position: absolute; left: 9px; top: 12px; width: 8px; height: 8px;
-      border-radius: 50%; background: #f8fafc; border: 2px solid #0f172a;
+      position: fixed;
+      left: 35px;
+      top: 35px;
+      width: 20px;
+      height: 20px;
+      background-color: #ff3f3f;
+      border: 2px solid #ffffff;
+      border-radius: 50%;
+      z-index: 2147483647;
+      pointer-events: none;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+      transform: translate(-10px, -10px);
+      display: block;
     }
     .project-sane-click-ring {
-      position: fixed; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px;
-      border: 2px solid #22d3ee; border-radius: 999px; z-index: 2147483646;
-      pointer-events: none; animation: projectSaneClick .55s ease-out forwards;
+      position: fixed;
+      width: 30px;
+      height: 30px;
+      border: 3px solid #ff3f3f;
+      border-radius: 50%;
+      z-index: 2147483646;
+      pointer-events: none;
+      transform: translate(-15px, -15px);
+      animation: projectSaneClickRing 0.5s ease-out forwards;
     }
-    @keyframes projectSaneClick {
-      from { opacity: .95; transform: scale(.35); }
-      to { opacity: 0; transform: scale(3.6); }
+    @keyframes projectSaneClickRing {
+      from {
+        opacity: 1;
+        transform: translate(-15px, -15px) scale(0.2);
+      }
+      to {
+        opacity: 0;
+        transform: translate(-15px, -15px) scale(2.0);
+      }
     }
     .project-sane-highlight {
-      outline: 3px solid #22d3ee !important; outline-offset: 3px !important;
-      box-shadow: 0 0 0 6px rgba(34,211,238,.18), 0 0 24px rgba(34,211,238,.5) !important;
-      transition: outline-color .12s ease, box-shadow .12s ease;
+      outline: 3px solid #ff3f3f !important;
+      outline-offset: 3px !important;
+      box-shadow: 0 0 0 6px rgba(255, 63, 63, 0.2), 0 0 24px rgba(255, 63, 63, 0.5) !important;
+      transition: outline-color 0.15s ease, box-shadow 0.15s ease;
     }
   `;
   document.documentElement.appendChild(style);
@@ -87,35 +101,109 @@ DEMO_OVERLAY_SCRIPT = """
   cursor.id = 'project-sane-cursor';
   document.documentElement.appendChild(cursor);
   window.__projectSaneCursor = { x: 35, y: 35 };
-  window.__projectSaneMoveCursor = async (x, y, steps = 24, stepDelay = 18) => {
-    const start = window.__projectSaneCursor || { x: 35, y: 35 };
-    for (let i = 1; i <= steps; i += 1) {
-      const t = i / steps;
-      const ease = t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      const nx = start.x + (x - start.x) * ease;
-      const ny = start.y + (y - start.y) * ease;
-      cursor.style.left = `${nx}px`;
-      cursor.style.top = `${ny}px`;
-      window.__projectSaneCursor = { x: nx, y: ny };
-      await new Promise(r => setTimeout(r, stepDelay));
+  window.__projectSaneShowCursor = () => {
+    const cursorEl = document.getElementById('project-sane-cursor');
+    if (cursorEl) cursorEl.style.display = 'block';
+  };
+  window.__projectSaneMoveCursor = (x, y) => {
+    const cursorEl = document.getElementById('project-sane-cursor');
+    if (cursorEl) {
+      cursorEl.style.left = x + 'px';
+      cursorEl.style.top = y + 'px';
     }
+    window.__projectSaneCursor = { x, y };
   };
   window.__projectSaneClickEffect = (x, y) => {
     const ring = document.createElement('div');
     ring.className = 'project-sane-click-ring';
-    ring.style.left = `${x}px`;
-    ring.style.top = `${y}px`;
+    ring.style.left = x + 'px';
+    ring.style.top = y + 'px';
     document.documentElement.appendChild(ring);
-    setTimeout(() => ring.remove(), 700);
+    setTimeout(() => ring.remove(), 500);
   };
-  window.__projectSaneHighlight = async (el, duration = 550) => {
-    if (!el) return;
-    el.classList.add('project-sane-highlight');
-    await new Promise(r => setTimeout(r, duration));
-    el.classList.remove('project-sane-highlight');
+  window.__projectSaneRemoveCursor = () => {
+    const cursorEl = document.getElementById('project-sane-cursor');
+    if (cursorEl) cursorEl.style.display = 'none';
   };
 })();
 """
+
+
+async def show_cursor(page: Page) -> None:
+    """Make the virtual cursor visible on the page."""
+    if not DEMO_MODE:
+        return
+    try:
+        await page.evaluate("window.__projectSaneShowCursor?.()")
+    except Exception:
+        pass
+
+
+async def move_cursor(page: Page, x: float, y: float) -> None:
+    """Smoothly move both the Playwright mouse and the virtual cursor to (x, y) coordinates."""
+    if not DEMO_MODE:
+        try:
+            await page.mouse.move(x, y)
+        except Exception:
+            pass
+        return
+
+    try:
+        current_pos = await page.evaluate("window.__projectSaneCursor || { x: 35, y: 35 }")
+    except Exception:
+        current_pos = {"x": 35, "y": 35}
+
+    start_x = current_pos.get("x", 35)
+    start_y = current_pos.get("y", 35)
+
+    steps = 20
+    for i in range(1, steps + 1):
+        t = i / steps
+        ease = 2 * t * t if t < 0.5 else -1 + (4 - 2 * t) * t
+        curr_x = start_x + (x - start_x) * ease
+        curr_y = start_y + (y - start_y) * ease
+
+        try:
+            await page.mouse.move(curr_x, curr_y)
+        except Exception:
+            pass
+
+        try:
+            await page.evaluate("""({ x, y }) => {
+                const cursor = document.getElementById('project-sane-cursor');
+                if (cursor) {
+                    cursor.style.left = x + 'px';
+                    cursor.style.top = y + 'px';
+                }
+                window.__projectSaneCursor = { x, y };
+            }""", {"x": curr_x, "y": curr_y})
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.01)
+
+
+async def click_animation(page: Page, x: float, y: float) -> None:
+    """Trigger the click ripple animation at the specified coordinates."""
+    if not DEMO_MODE:
+        return
+    try:
+        await page.evaluate(
+            "({ x, y }) => window.__projectSaneClickEffect?.(x, y)",
+            {"x": x, "y": y}
+        )
+    except Exception:
+        pass
+
+
+async def remove_cursor(page: Page) -> None:
+    """Hide the virtual cursor from the page."""
+    if not DEMO_MODE:
+        return
+    try:
+        await page.evaluate("window.__projectSaneRemoveCursor?.()")
+    except Exception:
+        pass
 
 
 async def ensure_demo_overlay(page: Page) -> None:
@@ -123,6 +211,7 @@ async def ensure_demo_overlay(page: Page) -> None:
         return
     try:
         await page.evaluate(DEMO_OVERLAY_SCRIPT)
+        await show_cursor(page)
     except Exception:
         pass
 
@@ -142,32 +231,47 @@ async def _visible_center_for_selector(page: Page, selector: str, timeout: int) 
 
 async def human_like_click(page: Page, selector: str, timeout: int = 10000) -> None:
     """
-    Locates an Odoo UI element, smoothly moves the virtual cursor to its
-    coordinate target, and performs a natural click.
+    Locates an Odoo UI element, highlights it, smoothly moves the virtual cursor
+    to its coordinate target, triggers a click animation, pauses for 500ms, and
+    performs the click.
     """
     await ensure_demo_overlay(page)
     element, box = await _visible_center_for_selector(page, selector, timeout)
 
     target_x = box["x"] + box["width"] / 2 + random.randint(-2, 2)
     target_y = box["y"] + box["height"] / 2 + random.randint(-2, 2)
-    if DEMO_MODE:
-        await page.evaluate(
-            """async ({ x, y, stepDelay }) => {
-                await window.__projectSaneMoveCursor?.(x, y, 26, stepDelay);
-            }""",
-            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
-        )
-        await element.evaluate(
-            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
-            DEMO_HIGHLIGHT_MS,
-        )
-    else:
-        await page.mouse.move(target_x, target_y)
 
     if DEMO_MODE:
-        await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
-    await element.click(timeout=timeout)
-    await demo_pause(page)
+        # Highlight target element
+        try:
+            await element.evaluate("""el => el.classList.add('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        # Move visible cursor along the same path as Playwright mouse
+        await move_cursor(page, target_x, target_y)
+
+        # Trigger click ripple animation
+        await click_animation(page, target_x, target_y)
+
+        # Pause 500ms
+        await page.wait_for_timeout(500)
+
+        # Execute click
+        await element.click(timeout=timeout)
+
+        # Remove highlight
+        try:
+            await element.evaluate("""el => el.classList.remove('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        # Delay after click = 1000ms
+        await page.wait_for_timeout(1000)
+    else:
+        # Existing behavior preserved
+        await page.mouse.move(target_x, target_y)
+        await element.click(timeout=timeout)
 
 
 async def human_like_fill(page: Page, selector: str, value: str, timeout: int = 10000) -> None:
@@ -175,19 +279,34 @@ async def human_like_fill(page: Page, selector: str, value: str, timeout: int = 
     element, box = await _visible_center_for_selector(page, selector, timeout)
     target_x = box["x"] + min(max(box["width"] * 0.35, 10), max(box["width"] - 8, 10))
     target_y = box["y"] + box["height"] / 2
+
     if DEMO_MODE:
-        await page.evaluate(
-            """async ({ x, y, stepDelay }) => {
-                await window.__projectSaneMoveCursor?.(x, y, 24, stepDelay);
-            }""",
-            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
-        )
-        await element.evaluate(
-            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
-            DEMO_HIGHLIGHT_MS,
-        )
-    await page.fill(selector, value)
-    await demo_pause(page, max(350, DEMO_ACTION_DELAY_MS // 2))
+        # Highlight target element
+        try:
+            await element.evaluate("""el => el.classList.add('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        # Move cursor to field
+        await move_cursor(page, target_x, target_y)
+
+        # Focus/click animation
+        await click_animation(page, target_x, target_y)
+        await page.wait_for_timeout(350)
+
+        # Fill element
+        await page.fill(selector, value)
+
+        # Remove highlight
+        try:
+            await element.evaluate("""el => el.classList.remove('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        await demo_pause(page, max(350, DEMO_ACTION_DELAY_MS // 2))
+    else:
+        await page.mouse.move(target_x, target_y)
+        await page.fill(selector, value)
 
 
 async def human_like_click_locator(page: Page, locator, timeout: int = 10000) -> None:
@@ -198,23 +317,42 @@ async def human_like_click_locator(page: Page, locator, timeout: int = 10000) ->
     box = await handle.bounding_box()
     if not box:
         raise ValueError("Target locator has no bounding box.")
+
     await ensure_demo_overlay(page)
     target_x = box["x"] + box["width"] / 2 + random.randint(-2, 2)
     target_y = box["y"] + box["height"] / 2 + random.randint(-2, 2)
+
     if DEMO_MODE:
-        await page.evaluate(
-            """async ({ x, y, stepDelay }) => {
-                await window.__projectSaneMoveCursor?.(x, y, 24, stepDelay);
-            }""",
-            {"x": target_x, "y": target_y, "stepDelay": DEMO_CURSOR_STEP_DELAY_MS},
-        )
-        await handle.evaluate(
-            """async (el, duration) => window.__projectSaneHighlight?.(el, duration)""",
-            DEMO_HIGHLIGHT_MS,
-        )
-        await page.evaluate("""({ x, y }) => window.__projectSaneClickEffect?.(x, y)""", {"x": target_x, "y": target_y})
-    await locator.click(timeout=timeout)
-    await demo_pause(page)
+        # Highlight target element
+        try:
+            await handle.evaluate("""el => el.classList.add('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        # Move visible cursor along the same path as Playwright mouse
+        await move_cursor(page, target_x, target_y)
+
+        # Trigger click ripple animation
+        await click_animation(page, target_x, target_y)
+
+        # Pause 500ms
+        await page.wait_for_timeout(500)
+
+        # Execute click
+        await locator.click(timeout=timeout)
+
+        # Remove highlight
+        try:
+            await handle.evaluate("""el => el.classList.remove('project-sane-highlight')""")
+        except Exception:
+            pass
+
+        # Delay after click = 1000ms
+        await page.wait_for_timeout(1000)
+    else:
+        # Existing behavior preserved
+        await page.mouse.move(target_x, target_y)
+        await locator.click(timeout=timeout)
 
 
 class BrowserRunContext:

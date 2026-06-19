@@ -10,7 +10,16 @@ import traceback
 from typing import Any
 
 from langchain_core.tools import tool
-from browser_agent import demo_pause, ensure_demo_overlay, human_like_click, human_like_fill
+from browser_agent import (
+    demo_pause,
+    ensure_demo_overlay,
+    human_like_click,
+    human_like_fill,
+    show_cursor,
+    move_cursor,
+    click_animation,
+    remove_cursor,
+)
 from demo_mode import emit_demo_thought, emit_plan_progress
 from exceptions import ExecutionError
 import odoo_selectors as selectors

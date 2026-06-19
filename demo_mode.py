@@ -10,8 +10,8 @@ from typing import Any, Dict, Optional
 from stream_manager import StreamManager
 
 
-DEMO_MODE = os.getenv("DEMO_MODE", "1").strip().lower() not in {"0", "false", "no", "off"}
-DEMO_ACTION_DELAY_MS = int(os.getenv("DEMO_ACTION_DELAY_MS", "650"))
+DEMO_MODE = os.getenv("DEMO_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+DEMO_ACTION_DELAY_MS = int(os.getenv("DEMO_ACTION_DELAY_MS", "1000") if DEMO_MODE else os.getenv("DEMO_ACTION_DELAY_MS", "650"))
 DEMO_CURSOR_STEP_DELAY_MS = int(os.getenv("DEMO_CURSOR_STEP_DELAY_MS", "18"))
 DEMO_HIGHLIGHT_MS = int(os.getenv("DEMO_HIGHLIGHT_MS", "550"))
 
