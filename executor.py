@@ -254,7 +254,9 @@ class ExecutionEngine:
             
             # 4. Stream action result details back to the analyst's web page panel
             if self.emit:
-                await self.emit(StreamManager.emit_action_result(step.id, result.success, result.message, result.extracted_text))
+                await self.emit(StreamManager.emit_action_result(
+                    step.id, result.success, result.message, result.extracted_text, screenshot_path=screenshot_path
+                ))
                 
             results.append(result)
             await asyncio.sleep(1.2) # Elegant pacing delay for video recordings
@@ -529,9 +531,35 @@ class ExecutionEngine:
                 except Exception:
                     pass
 
-                # Graceful early-exit: if 0 elements found, fail fast
-                # instead of waiting 5s for the visibility timeout.
+                # Graceful early-exit: if 0 elements found, try text-based fallback or route recovery
                 if elements_found == 0:
+                    try:
+                        body_text = await self.page.locator("body").first.inner_text()
+                        html_content = await self.page.content()
+                    except Exception:
+                        body_text = ""
+                        html_content = ""
+                    
+                    target_str = action.target.strip()
+                    if target_str and (target_str.lower() in body_text.lower() or target_str.lower() in html_content.lower()):
+                        for fallback_loc in [
+                            self.page.get_by_text(target_str, exact=False),
+                            self.page.locator(f"text='{target_str}'")
+                        ]:
+                            try:
+                                if await fallback_loc.count() > 0:
+                                    first_loc = fallback_loc.first
+                                    await first_loc.wait_for(state="visible", timeout=3000)
+                                    await self._animate_cursor_to_element(first_loc)
+                                    await first_loc.click()
+                                    return (
+                                        ExecutionResult(step_id=step_id, success=True, message=f"Clicked '{action.target}' (recovered via text-based locator fallback)"),
+                                        await fallback_loc.count(),
+                                        f"text-fallback: {target_str}",
+                                    )
+                            except Exception:
+                                pass
+
                     # Route fallback: if the LLM tried to click a module name (e.g. "Companies") 
                     # but skipped opening the menu, we can recover by navigating directly.
                     route = None
@@ -588,9 +616,51 @@ class ExecutionEngine:
                 except Exception:
                     pass
 
-                # Graceful early-exit: if 0 elements found, fail fast
-                # instead of waiting 5s for the visibility timeout.
+                # Graceful early-exit: if 0 elements found, try text-based fallback
                 if elements_found == 0:
+                    try:
+                        body_text = await self.page.locator("body").first.inner_text()
+                        html_content = await self.page.content()
+                    except Exception:
+                        body_text = ""
+                        html_content = ""
+                    
+                    target_str = action.target.strip()
+                    if target_str and (target_str.lower() in body_text.lower() or target_str.lower() in html_content.lower()):
+                        for fallback_loc in [
+                            self.page.get_by_text(target_str, exact=False),
+                            self.page.locator(f"text='{target_str}'")
+                        ]:
+                            try:
+                                if await fallback_loc.count() > 0:
+                                    first_loc = fallback_loc.first
+                                    await first_loc.wait_for(state="visible", timeout=3000)
+                                    await self._animate_cursor_to_element(first_loc)
+                                    await first_loc.fill(action.value)
+                                    
+                                    # Press Enter after filling search inputs
+                                    _search_targets = {
+                                        "search", "search bar", "search_bar", "search...", "search settings",
+                                        "settings search", "search settings",
+                                    }
+                                    if (
+                                        action.target.lower().strip() in _search_targets
+                                        or "search" in action.target.lower()
+                                        or "Search..." in action.target
+                                    ):
+                                        await first_loc.press("Enter")
+                                        try:
+                                            await self.page.wait_for_load_state("load", timeout=3000)
+                                        except Exception:
+                                            pass
+                                    return (
+                                        ExecutionResult(step_id=step_id, success=True, message=f"Input '{action.value}' into {action.target} (recovered via text-based locator fallback)"),
+                                        await fallback_loc.count(),
+                                        f"text-fallback: {target_str}",
+                                    )
+                            except Exception:
+                                pass
+
                     return (
                         ExecutionResult(
                             step_id=step_id,
@@ -640,9 +710,35 @@ class ExecutionEngine:
                 except Exception:
                     pass
 
-                # ── Graceful fallback: if zero elements found, extract page
-                # title + visible body text snippet instead of timing out.
+                # Graceful early-exit: if 0 elements found, try text-based fallback
                 if elements_found == 0:
+                    try:
+                        body_text = await self.page.locator("body").first.inner_text()
+                        html_content = await self.page.content()
+                    except Exception:
+                        body_text = ""
+                        html_content = ""
+                    
+                    target_str = action.target.strip()
+                    if target_str and (target_str.lower() in body_text.lower() or target_str.lower() in html_content.lower()):
+                        for fallback_loc in [
+                            self.page.get_by_text(target_str, exact=False),
+                            self.page.locator(f"text='{target_str}'")
+                        ]:
+                            try:
+                                if await fallback_loc.count() > 0:
+                                    first_loc = fallback_loc.first
+                                    await first_loc.wait_for(state="visible", timeout=3000)
+                                    await self._animate_cursor_to_element(first_loc)
+                                    text = await first_loc.inner_text()
+                                    return (
+                                        ExecutionResult(step_id=step_id, success=True, message=f"Extracted from {action.target} (recovered via text-based locator fallback)", extracted_text=text),
+                                        await fallback_loc.count(),
+                                        f"text-fallback: {target_str}",
+                                    )
+                            except Exception:
+                                pass
+
                     page_title = await self.page.title()
                     # Grab a truncated snapshot of visible text on the page
                     try:

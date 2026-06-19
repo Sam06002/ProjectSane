@@ -31,7 +31,7 @@ class StreamManager:
         })
 
     @staticmethod
-    def emit_action_result(step_id: int, success: bool, message: str, extracted_text: str = None) -> str:
+    def emit_action_result(step_id: int, success: bool, message: str, extracted_text: str = None, screenshot_path: str = None) -> str:
         data = {
             "step_id": step_id,
             "success": success,
@@ -39,6 +39,8 @@ class StreamManager:
         }
         if extracted_text:
             data["extracted_text"] = extracted_text
+        if screenshot_path:
+            data["screenshot_path"] = screenshot_path
         return StreamManager.format_sse("action_result", data)
 
     @staticmethod

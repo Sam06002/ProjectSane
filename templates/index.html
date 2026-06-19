@@ -33,7 +33,16 @@
             background: var(--bg);
             color: var(--text);
             min-height: 100vh;
+            display: flex;
+            flex-direction: column;
             overflow: hidden;
+        }
+
+        body:not(.mode-developer) .dev-mode-only {
+            display: none !important;
+        }
+        body.mode-developer .dev-mode-only {
+            display: flex !important;
         }
 
         /* ── Header ────────────────────────────────────────────────────────── */
@@ -101,7 +110,8 @@
         /* ── Main Layout ─────────────────────────────────────────────────── */
         .main {
             display: flex;
-            height: calc(100vh - 97px);
+            flex: 1;
+            min-height: 0;
         }
 
         /* ── Left Panel ──────────────────────────────────────────────────── */
@@ -212,7 +222,7 @@
         .event-detail { font-size: 11px; color: var(--muted2); margin-top: 2px; line-height: 1.4; }
 
         /* thinking toggle */
-        .thinking-block { margin-top: 5px; }
+        .thinking-block { display: none !important; }
         .thinking-toggle {
             font-size: 10px; color: var(--indigo); cursor: pointer;
             display: inline-flex; align-items: center; gap: 3px;
@@ -348,7 +358,7 @@
 
         /* ── Center: Monitor ─────────────────────────────────────────────── */
         .monitor-panel {
-            width: 280px;
+            width: 330px;
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
@@ -725,130 +735,194 @@
 <!-- ── Header ── -->
 <div class="header">
     <div class="header-logo">🧠</div>
-    <div class="header-info">
+    <div class="header-info" style="flex: 1; min-width: 0;">
         <h1>Project Sane v3</h1>
         <p>Dual Cloud Engine · Engine 1 (Groq) · Engine 2 (Gemini) · Live Observation Layer</p>
     </div>
-    <div class="header-status">
+    <div class="header-status" style="display: flex; align-items: center; gap: 14px;">
+        <!-- View Toggle Switches -->
+        <div class="view-toggle-container" style="background: var(--bg4); border: 1px solid var(--border2); border-radius: 20px; padding: 2.5px; display: flex; gap: 2px;">
+            <button id="btn-view-manager" class="toggle-btn active" onclick="setViewMode('manager')" style="background: var(--blue); color: #080c14; border: none; padding: 5px 14px; font-size: 11px; font-weight: 700; border-radius: 16px; cursor: pointer; transition: all 0.2s ease;">Manager View</button>
+            <button id="btn-view-developer" class="toggle-btn" onclick="setViewMode('developer')" style="background: transparent; color: var(--muted2); border: none; padding: 5px 14px; font-size: 11px; font-weight: 700; border-radius: 16px; cursor: pointer; transition: all 0.2s ease;">Developer View</button>
+        </div>
+
+        <div style="height: 18px; width: 1px; background: var(--border);"></div>
+
         <div class="status-dot" id="headerDot"></div>
         <span class="status-label" id="statusLabel">Idle</span>
     </div>
 </div>
 
 <!-- ── Tabs ── -->
-<div class="tabs">
+<div class="tabs" style="flex-shrink: 0;">
     <div class="tab active" id="tab-run-btn"  onclick="switchTab('run')">▶ Run Pipeline</div>
     <div class="tab"        id="tab-runs-btn" onclick="switchTab('runs')">📋 Run History</div>
 </div>
 
+<!-- ── Mission Bar ── -->
+<div class="mission-bar" id="missionBar" style="background: var(--bg3); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-shrink: 0;">
+    <div style="flex: 1; min-width: 0;">
+        <span style="font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.8px;">Current Mission</span>
+        <div id="mission-text" style="font-size: 12.5px; font-weight: 600; color: var(--blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="Awaiting support ticket...">Awaiting support ticket...</div>
+    </div>
+    <div style="width: 150px; flex-shrink: 0;">
+        <span style="font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.8px;">Current Step</span>
+        <div id="mission-step" style="font-size: 13px; font-weight: 700; color: var(--purple); margin-top: 2px;">—</div>
+    </div>
+    <div style="width: 130px; flex-shrink: 0;">
+        <span style="font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.8px;">Run Status</span>
+        <div id="mission-status" style="font-size: 13px; font-weight: 700; color: var(--amber); margin-top: 2px;">Idle</div>
+    </div>
+    <div style="width: 100px; flex-shrink: 0;">
+        <span style="font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.8px;">Confidence</span>
+        <div id="mission-confidence" style="font-size: 13px; font-weight: 700; color: var(--green); margin-top: 2px;">—</div>
+    </div>
+</div>
+
 <!-- ── Run Pipeline Tab ── -->
-<div id="tab-run">
+<div id="tab-run" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
     <div class="main">
 
-        <!-- Left: form + stream -->
-        <div class="left-panel">
-            <div class="form-section">
+        <!-- LEFT PANEL: Inputs & Execution Plan -->
+        <div class="left-panel" style="width: 320px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg2); border-right: 1px solid var(--border);">
+            <div class="form-section" style="padding: 16px 18px; border-bottom: 1px solid var(--border); background: var(--bg3);">
                 <div class="form-group">
                     <label>Database URL</label>
                     <input type="text" id="dbUrl" value="https://shsri.odoo.com" placeholder="yourcompany.odoo.com"/>
                 </div>
-                <div class="form-group">
+                <div class="form-group" style="margin-top: 10px;">
                     <label>Support Ticket</label>
-                    <textarea id="ticket">User cannot save the new contact. A warning appears saying 'Email is required' but there is no email field visible.</textarea>
+                    <textarea id="ticket" style="height: 70px;">User cannot save the new contact. A warning appears saying 'Email is required' but there is no email field visible.</textarea>
                 </div>
-                <button class="run-btn" id="runBtn" onclick="runPipeline()">⚡ Execute Pipeline</button>
+                <button class="run-btn" id="runBtn" onclick="runPipeline()" style="margin-top: 8px;">⚡ Execute Pipeline</button>
             </div>
-            <!-- Final Draft Card — high-visibility summary above logs -->
-            <div class="final-draft-card" id="finalDraftCard">
+            
+            <!-- Final Draft Card (Concise Summary of Report) -->
+            <div class="final-draft-card" id="finalDraftCard" style="margin: 12px; display: none;">
                 <div class="draft-card-header">
                     <span class="draft-card-badge">✓ Resolution Draft</span>
-                    <span class="draft-card-title">Final Concise Summary</span>
                 </div>
-                <div class="draft-card-body" id="finalDraftBody"></div>
+                <div class="draft-card-body" id="finalDraftBody" style="font-size: 11.5px; max-height: 150px; overflow-y: auto;"></div>
             </div>
-            <div class="demo-panel" id="demoThoughtPanel">
-                <div class="demo-panel-header">
-                    <span>Live Thought Stream</span>
-                    <span>Demo Mode</span>
-                </div>
-                <div class="demo-thought-feed" id="demoThoughtFeed"></div>
-            </div>
-            <div class="plan-viewer" id="planViewer">
-                <div class="demo-panel-header">
-                    <span>Execution Plan</span>
+
+            <!-- Execution Plan checklist -->
+            <div class="plan-viewer visible" id="planViewer" style="margin: 12px; display: flex; flex-direction: column; flex: 1; border: 1px solid var(--border); background: var(--bg4); border-radius: 8px; overflow: hidden;">
+                <div class="demo-panel-header" style="padding: 8px 11px; border-bottom: 1px solid var(--border); font-size: 10px; font-weight: 700; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.7px; display: flex; justify-content: space-between;">
+                    <span>Execution Plan Checklist</span>
                     <span id="planStatus">Awaiting plan</span>
                 </div>
-                <div class="plan-summary" id="planSummary"></div>
-                <div class="plan-steps" id="planSteps"></div>
-            </div>
-            <div class="stream-container" id="stream-container">
-                <div class="stream-placeholder">
-                    <p>Enter a ticket and press <span>Execute Pipeline</span> to start the investigation.</p>
+                <div class="plan-summary" id="planSummary" style="padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted2); line-height: 1.4;"></div>
+                <div class="plan-steps" id="planSteps" style="flex: 1; overflow-y: auto; padding: 6px 8px;">
+                    <div style="color:var(--muted); font-size:11px; text-align:center; padding: 20px 0;">No active plan loaded</div>
                 </div>
             </div>
         </div>
 
-        <!-- Center: observation monitor -->
-        <div class="monitor-panel">
-            <div class="monitor-header">
-                <div class="monitor-title">
+        <!-- CENTER PANEL: Live Browser View & Activity Timeline -->
+        <div class="center-panel" style="flex: 1.6; min-width: 500px; display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid var(--border); overflow: hidden;">
+            <div class="monitor-header" style="padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; background: var(--bg2);">
+                <div class="monitor-title" style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); display: flex; align-items: center; gap: 7px;">
                     <div class="live-dot" id="liveDot"></div>
-                    Observation Layer
+                    Live Browser Activity View
                 </div>
-                <span style="font-size:10px; color:#3a4559;" id="runIdLabel">—</span>
+                <span id="screenshot-step-label" style="font-size: 10px; color: var(--blue); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Awaiting capture</span>
             </div>
-            <div class="monitor-stats">
-                <div class="stat-card">
-                    <div class="stat-label">Errors</div>
-                    <div class="stat-value errors" id="stat-errors">0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Warnings</div>
-                    <div class="stat-value warnings" id="stat-warnings">0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Events</div>
-                    <div class="stat-value events" id="stat-events">0</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">LLM Calls</div>
-                    <div class="stat-value calls" id="stat-calls">0</div>
+            
+            <div class="browser-frame-container" style="flex: 1.2; display: flex; align-items: center; justify-content: center; padding: 16px 20px; background: #060a12; min-height: 0; overflow: hidden; position: relative;">
+                <div class="browser-window-mock" style="width: 100%; height: 100%; display: flex; flex-direction: column; border-radius: 8px; border: 1px solid var(--border2); background: var(--bg2); overflow: hidden; box-shadow: 0 12px 36px rgba(0,0,0,0.5);">
+                    <div class="browser-toolbar" style="height: 32px; background: var(--bg3); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 12px; gap: 8px; flex-shrink: 0;">
+                        <div style="display: flex; gap: 6px;">
+                            <span style="width: 9px; height: 9px; border-radius: 50%; background: #ff5f56; display: inline-block;"></span>
+                            <span style="width: 9px; height: 9px; border-radius: 50%; background: #ffbd2e; display: inline-block;"></span>
+                            <span style="width: 9px; height: 9px; border-radius: 50%; background: #27c93f; display: inline-block;"></span>
+                        </div>
+                        <div style="flex: 1; margin: 0 20px; height: 20px; background: var(--bg4); border-radius: 4px; border: 1px solid var(--border); display: flex; align-items: center; padding: 0 10px;">
+                            <span style="font-size: 9px; color: var(--muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" id="browser-address-bar">https://shsri.odoo.com</span>
+                        </div>
+                    </div>
+                    <div style="flex: 1; background: #080c14; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;">
+                        <img id="live-screenshot" src="" style="max-width: 100%; max-height: 100%; object-fit: contain; display: none;" alt="Browser screenshot" />
+                        <div id="screenshot-placeholder" style="display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); padding: 20px; text-align: center;">
+                            <span style="font-size: 32px; opacity: 0.3;">🌐</span>
+                            <span style="font-size: 12px; font-weight: 500;">Browser instance not started yet</span>
+                            <span style="font-size: 10px; color: var(--muted2);">Start the pipeline to initiate live browser visual tracking</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="monitor-feed" id="monitor-feed">
-                <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px;">
-                    Waiting for run...
+
+            <div class="activity-timeline-section" style="flex: 0.8; border-top: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg2); min-height: 0;">
+                <div class="timeline-header" style="padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 10px; font-weight: 700; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.7px; background: var(--bg3);">
+                    ⏱️ Agent Activity Timeline
+                </div>
+                <div class="monitor-feed" id="monitor-feed" style="flex: 1; overflow-y: auto; padding: 12px 16px;">
+                    <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:16px;">
+                        Waiting for chronological timeline activity events...
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Right: Draft Report Panel -->
-        <div class="report-panel">
-            <div class="report-panel-header">
-                <div class="report-panel-title">
-                    📄 Draft Report
-                    <span class="report-badge" id="reportBadge">Awaiting run</span>
+        <!-- RIGHT PANEL: Findings Panel & Developer Logs -->
+        <div class="right-panel" style="flex: 1.2; min-width: 380px; display: flex; flex-direction: column; background: var(--bg2); overflow: hidden; border-left: 1px solid var(--border);">
+            <div class="findings-container" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                <div class="report-panel-header" style="padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg3); height: 48px; flex-shrink: 0;">
+                    <div class="report-panel-title" style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); display: flex; align-items: center; gap: 8px;">
+                        📄 Findings & Discoveries
+                        <span class="report-badge" id="reportBadge">Awaiting run</span>
+                    </div>
+                    <div class="report-actions" id="reportActions" style="display:none">
+                        <button class="report-action-btn" onclick="copyReport()">📋 Copy</button>
+                        <button class="report-action-btn primary" onclick="exportReport()">⬇ Export</button>
+                    </div>
                 </div>
-                <div class="report-actions" id="reportActions" style="display:none">
-                    <button class="report-action-btn" onclick="copyReport()">📋 Copy</button>
-                    <button class="report-action-btn primary" onclick="exportReport()">⬇ Export</button>
+                
+                <div class="report-body" id="reportBody" style="flex: 1; overflow-y: auto; padding: 20px 24px;">
+                    <div class="report-placeholder">
+                        <div class="report-placeholder-icon" style="font-size: 32px; opacity: 0.3;">📋</div>
+                        <h3 style="font-size: 13px; font-weight: 600; color: var(--muted2); margin-top: 6px;">No discoveries reported</h3>
+                        <p style="font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5;">Execute the agent pipeline. Live findings, issue statuses, and resolutions will populate here.</p>
+                    </div>
+
+                    <div class="report-content" id="reportContent">
+                        <!-- Dynamically populated -->
+                    </div>
                 </div>
             </div>
-            <div class="report-body" id="reportBody">
-                <div class="report-placeholder">
-                    <div class="report-placeholder-icon">📋</div>
-                    <h3>No report yet</h3>
-                    <p>Run the agent against a support ticket. The full investigation draft will appear here automatically when complete.</p>
-                </div>
 
-                <div class="report-content" id="reportContent">
-                    <!-- Dynamically populated -->
+            <!-- Developer View Mode only: Technical logs & metrics -->
+            <div class="dev-mode-only" id="dev-telemetry-section" style="flex: 1; border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg3);">
+                <div class="monitor-stats" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); background: var(--bg4); flex-shrink: 0;">
+                    <div class="stat-card" style="padding: 6px 8px; border: 1px solid var(--border); background: var(--bg3); border-radius: 4px; text-align: center;">
+                        <div class="stat-label" style="font-size: 8px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px;">Errors</div>
+                        <div class="stat-value errors" id="stat-errors" style="font-size: 13px; font-weight: 700; color: var(--red); margin-top: 2px;">0</div>
+                    </div>
+                    <div class="stat-card" style="padding: 6px 8px; border: 1px solid var(--border); background: var(--bg3); border-radius: 4px; text-align: center;">
+                        <div class="stat-label" style="font-size: 8px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px;">Warnings</div>
+                        <div class="stat-value warnings" id="stat-warnings" style="font-size: 13px; font-weight: 700; color: var(--amber); margin-top: 2px;">0</div>
+                    </div>
+                    <div class="stat-card" style="padding: 6px 8px; border: 1px solid var(--border); background: var(--bg3); border-radius: 4px; text-align: center;">
+                        <div class="stat-label" style="font-size: 8px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px;">Events</div>
+                        <div class="stat-value events" id="stat-events" style="font-size: 13px; font-weight: 700; color: var(--cyan); margin-top: 2px;">0</div>
+                    </div>
+                    <div class="stat-card" style="padding: 6px 8px; border: 1px solid var(--border); background: var(--bg3); border-radius: 4px; text-align: center;">
+                        <div class="stat-label" style="font-size: 8px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px;">LLM Calls</div>
+                        <div class="stat-value calls" id="stat-calls" style="font-size: 13px; font-weight: 700; color: var(--purple); margin-top: 2px;">0</div>
+                    </div>
+                </div>
+                <div style="padding: 6px 12px; font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                    <span>Raw Event Stream & Thinking Trace</span>
+                    <span style="color: var(--indigo); font-size: 8px;">developer mode active</span>
+                </div>
+                <div class="stream-container" id="stream-container" style="flex: 1; overflow-y: auto; padding: 10px; background: #060a12; font-family: monospace;">
+                    <div class="stream-placeholder" style="color: var(--muted); font-size: 10px; text-align: center; margin-top: 20px;">
+                        Waiting for execution data stream...
+                    </div>
                 </div>
             </div>
         </div>
 
     </div>
-</div>
 
 <!-- ── Runs History Tab ── -->
 <div id="tab-runs">
@@ -863,10 +937,32 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ── View mode toggle ───────────────────────────────────────────────────────────
+function setViewMode(mode) {
+    const isDev = mode === 'developer';
+    document.body.classList.toggle('mode-developer', isDev);
+    
+    const btnManager = document.getElementById('btn-view-manager');
+    const btnDeveloper = document.getElementById('btn-view-developer');
+    
+    if (isDev) {
+        btnDeveloper.style.background = 'var(--blue)';
+        btnDeveloper.style.color = '#080c14';
+        btnManager.style.background = 'transparent';
+        btnManager.style.color = 'var(--muted2)';
+    } else {
+        btnManager.style.background = 'var(--blue)';
+        btnManager.style.color = '#080c14';
+        btnDeveloper.style.background = 'transparent';
+        btnDeveloper.style.color = 'var(--muted2)';
+    }
+}
+
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(name) {
     document.getElementById('tab-run').style.display  = name === 'run'  ? '' : 'none';
     document.getElementById('tab-runs').style.display = name === 'runs' ? '' : 'none';
+    document.getElementById('missionBar').style.display = name === 'run' ? 'flex' : 'none';
     document.getElementById('tab-run-btn').classList.toggle('active',  name === 'run');
     document.getElementById('tab-runs-btn').classList.toggle('active', name === 'runs');
     if (name === 'runs') loadRuns();
@@ -885,18 +981,88 @@ let mon = { errors: 0, warnings: 0, events: 0, calls: 0 };
 
 function resetMonitor() {
     mon = { errors: 0, warnings: 0, events: 0, calls: 0 };
-    ['errors','warnings','events','calls'].forEach(k =>
-        document.getElementById('stat-' + k).textContent = '0'
-    );
+    
+    // Mission Bar
+    document.getElementById('mission-text').textContent = 'Investigating support ticket...';
+    document.getElementById('mission-text').title = 'Investigating support ticket...';
+    document.getElementById('mission-step').textContent = '—';
+    document.getElementById('mission-status').textContent = 'Starting...';
+    document.getElementById('mission-status').style.color = 'var(--amber)';
+    document.getElementById('mission-confidence').textContent = '—';
+
+    // Dev View mode stats
+    ['errors', 'warnings', 'events', 'calls'].forEach(k => {
+        const el = document.getElementById('stat-' + k);
+        if (el) el.textContent = '0';
+    });
+
     document.getElementById('monitor-feed').innerHTML = '';
     document.getElementById('runIdLabel').textContent = '—';
     document.getElementById('liveDot').classList.remove('active');
+    
+    // Reset address bar
+    const dbUrlVal = document.getElementById('dbUrl').value || 'https://shsri.odoo.com';
+    document.getElementById('browser-address-bar').textContent = dbUrlVal;
+
+    updateScreenshot(null, null);
 }
 
 function incMonitor(key) {
     mon[key]++;
     const el = document.getElementById('stat-' + key);
     if (el) el.textContent = mon[key];
+}
+
+function updateScreenshot(path, stepId) {
+    const img = document.getElementById('live-screenshot');
+    const placeholder = document.getElementById('screenshot-placeholder');
+    const label = document.getElementById('screenshot-step-label');
+    if (path) {
+        const srcPath = path.startsWith('/') ? path : '/' + path;
+        img.src = `${srcPath}?t=${Date.now()}`;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+        if (stepId) {
+            label.textContent = `Step ${stepId} Screenshot`;
+        } else {
+            label.textContent = `Live View`;
+        }
+    } else {
+        img.src = "";
+        img.style.display = 'none';
+        placeholder.style.display = 'flex';
+        label.textContent = 'Awaiting capture';
+    }
+}
+
+function getFriendlyActivityMessage(actionType, target, success) {
+    let msg = "";
+    const t = (target || "").toLowerCase();
+    if (actionType === 'click') {
+        if (t.includes('settings')) msg = success ? "Opened Settings" : "Opening Settings";
+        else if (t.includes('accounting')) msg = success ? "Located Accounting" : "Locating Accounting";
+        else if (t.includes('user')) msg = success ? "Located Users" : "Locating Users";
+        else if (t.includes('compan')) msg = success ? "Located Companies" : "Locating Companies";
+        else if (t.includes('save')) msg = success ? "Saved Changes" : "Saving Changes";
+        else msg = success ? `Clicked ${target}` : `Clicking ${target}`;
+    } else if (actionType === 'navigate') {
+        if (t.includes('settings')) msg = success ? "Opened Settings" : "Navigating to Settings";
+        else if (t.includes('accounting')) msg = success ? "Opened Accounting" : "Navigating to Accounting";
+        else if (t.includes('user')) msg = success ? "Opened Users Page" : "Navigating to Users";
+        else if (t.includes('compan')) msg = success ? "Opened Companies Page" : "Navigating to Companies";
+        else msg = success ? `Navigated to ${target}` : `Navigating to ${target}`;
+    } else if (actionType === 'input') {
+        msg = success ? `Entered value into ${target}` : `Entering value into ${target}`;
+    } else if (actionType === 'extract') {
+        msg = success ? `Extracted information from ${target}` : `Reading ${target}`;
+    } else if (actionType === 'screenshot') {
+        msg = "Captured browser screenshot";
+    } else if (actionType === 'final_summary') {
+        msg = "Generated Investigation Report";
+    } else {
+        msg = `${actionType || 'Action'} on ${target}`;
+    }
+    return msg;
 }
 
 function addMonitorEntry(cls, ctx, msg) {
@@ -906,10 +1072,20 @@ function addMonitorEntry(cls, ctx, msg) {
     const now = new Date().toLocaleTimeString();
     const el = document.createElement('div');
     el.className = `monitor-entry ${cls}`;
+    
+    let borderStyle = "var(--blue)";
+    if (cls === 'error') borderStyle = "var(--red)";
+    else if (cls === 'warning') borderStyle = "var(--amber)";
+    else if (cls === 'success') borderStyle = "var(--green)";
+    else if (cls === 'engine') borderStyle = "var(--purple)";
+    
+    el.style.borderLeft = `3px solid ${borderStyle}`;
     el.innerHTML = `
-        <div class="me-ctx">${escHtml(ctx)}</div>
-        <div class="me-msg">${escHtml(msg)}</div>
-        <div class="me-time">${now}</div>
+        <div class="me-ctx" style="display:flex; justify-content:space-between; font-size:10px; font-weight:700; color:var(--muted2); margin-bottom: 2px;">
+            <span>${escHtml(ctx)}</span>
+            <span style="color:var(--muted); font-size:9px;">${now}</span>
+        </div>
+        <div class="me-msg" style="color:var(--text); line-height:1.4;">${escHtml(msg)}</div>
     `;
     feed.appendChild(el);
     feed.scrollTop = feed.scrollHeight;
@@ -918,16 +1094,16 @@ function addMonitorEntry(cls, ctx, msg) {
 function handleMonitorEvent(type, data) {
     if (type === 'monitor_error') {
         incMonitor('errors');
-        addMonitorEntry('error', data.context || 'error', data.message);
+        addMonitorEntry('error', 'Alert', `Observed page error: ${data.message}`);
     } else if (type === 'monitor_warning') {
         incMonitor('warnings');
-        addMonitorEntry('warning', data.context || 'warning', data.message);
+        addMonitorEntry('warning', 'Warning', `Observed page warning: ${data.message}`);
     } else if (type === 'monitor_event') {
         incMonitor('events');
-        addMonitorEntry('event', data.label || 'event', data.detail || '');
+        addMonitorEntry('success', 'Page Event', `${data.label || 'Details'}: ${data.detail || ''}`);
     } else if (type === 'monitor_engine') {
         incMonitor('calls');
-        addMonitorEntry('engine', `Engine ${data.engine} · ${data.model}`, `${data.purpose} (call #${data.call_number})`);
+        addMonitorEntry('engine', 'Cognitive Action', `AI brain analyzed context for: ${data.purpose}`);
     }
     if (data.run_id) document.getElementById('runIdLabel').textContent = data.run_id.slice(0, 14) + '…';
 }
@@ -1006,13 +1182,20 @@ function renderExecutionPlan(plan) {
     `;
     steps.innerHTML = (plan.steps || []).map(step => `
         <div class="plan-step" id="plan-step-${step.id}" data-step="${step.id}">
-            <div class="plan-step-num">${step.id}</div>
+            <div class="plan-step-num">☐</div>
             <div>
                 <div class="plan-step-title">${escHtml(step.intent || '')}</div>
                 <div class="plan-step-meta">${escHtml(step.action?.type || '')} · ${escHtml(step.action?.target || '')}</div>
             </div>
         </div>
     `).join('');
+
+    // Update Mission Bar
+    document.getElementById('mission-text').textContent = plan.summary || 'Generated support workflow';
+    document.getElementById('mission-text').title = plan.summary || 'Generated support workflow';
+    document.getElementById('mission-confidence').textContent = `${Math.round((plan.confidence || 0) * 100)}%`;
+    document.getElementById('mission-status').textContent = 'Ready';
+    document.getElementById('mission-status').style.color = 'var(--blue)';
 }
 
 function updatePlanProgress(data) {
@@ -1020,6 +1203,18 @@ function updatePlanProgress(data) {
     const status = data.status || 'active';
     document.getElementById('planStatus').textContent =
         status === 'done' ? 'In progress' : status.charAt(0).toUpperCase() + status.slice(1);
+    
+    // Update Mission Bar Status
+    const statusLabel = status === 'done' || status === 'completed' ? 'Running' : status.charAt(0).toUpperCase() + status.slice(1);
+    document.getElementById('mission-status').textContent = statusLabel;
+    if (statusLabel === 'Running' || statusLabel === 'Active') {
+        document.getElementById('mission-status').style.color = 'var(--amber)';
+    } else if (statusLabel === 'Failed') {
+        document.getElementById('mission-status').style.color = 'var(--red)';
+    } else {
+        document.getElementById('mission-status').style.color = 'var(--green)';
+    }
+
     const id = Number(data.step_id || 0);
     let stepEl = document.getElementById(`plan-step-${id}`);
     if (!stepEl && id > 0) {
@@ -1028,7 +1223,7 @@ function updatePlanProgress(data) {
         stepEl.className = 'plan-step';
         stepEl.id = `plan-step-${id}`;
         stepEl.innerHTML = `
-            <div class="plan-step-num">${id}</div>
+            <div class="plan-step-num">☐</div>
             <div>
                 <div class="plan-step-title">${escHtml(data.message || 'Executing browser action')}</div>
                 <div class="plan-step-meta">Live browser action</div>
@@ -1037,15 +1232,23 @@ function updatePlanProgress(data) {
         steps.appendChild(stepEl);
     }
     if (!stepEl) return;
+    const numEl = stepEl.querySelector('.plan-step-num');
     if (status === 'active') {
         stepEl.classList.add('active');
+        stepEl.classList.remove('done', 'error');
+        if (numEl) numEl.textContent = '⏳';
+        
+        // Update step count
+        const total = document.querySelectorAll('#planSteps .plan-step').length;
+        document.getElementById('mission-step').textContent = `Step ${id} of ${total || '—'}`;
     } else if (status === 'done' || status === 'completed') {
-        stepEl.classList.remove('active');
+        stepEl.classList.remove('active', 'error');
         stepEl.classList.add('done');
-        stepEl.querySelector('.plan-step-num').textContent = '✓';
+        if (numEl) numEl.textContent = '☑';
     } else if (status === 'failed') {
         stepEl.classList.remove('active');
         stepEl.classList.add('error');
+        if (numEl) numEl.textContent = '❌';
     }
     stepEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
@@ -1117,6 +1320,9 @@ function handlePipelineEvent(eventType, data) {
     if (eventType === 'thinking_step') {
         addStreamCard('thinking', `Thinking${data.step_id > 0 ? ` · Step ${data.step_id}` : ''}`, data.intent, data.reasoning, data.step_id);
 
+        // Add to friendly activity feed
+        addMonitorEntry('engine', 'Cognitive Step', `Brain planning: ${data.intent}`);
+
         // Check if this thinking_step carries a simple_draft (Graph Complete event)
         if (data.intent === 'Graph Complete' && data.simple_draft) {
             const card = document.getElementById('finalDraftCard');
@@ -1128,6 +1334,26 @@ function handlePipelineEvent(eventType, data) {
         }
     } else if (eventType === 'action_start') {
         addStreamCard('action', `Executing · Step ${data.step_id}`, `${data.action} → ${data.target}`, '', undefined);
+
+        // Add to friendly activity feed
+        const friendlyMsg = getFriendlyActivityMessage(data.action, data.target, false);
+        addMonitorEntry('success', 'Timeline', friendlyMsg);
+
+        // Update location and step count in the Mission Bar
+        if (data.target) {
+            // Update address bar mockup on navigate actions
+            if (data.action === 'navigate') {
+                const dbUrl = document.getElementById('dbUrl').value || 'https://shsri.odoo.com';
+                const path = data.target.startsWith('/') ? data.target : '/' + data.target;
+                document.getElementById('browser-address-bar').textContent = dbUrl + path;
+            }
+        }
+        if (data.step_id) {
+            const total = document.querySelectorAll('#planSteps .plan-step').length;
+            document.getElementById('mission-step').textContent = `Step ${data.step_id} of ${total || '—'}`;
+        }
+        document.getElementById('mission-status').textContent = 'Running';
+        document.getElementById('mission-status').style.color = 'var(--amber)';
     } else if (eventType === 'action_result') {
         addStreamCard(
             data.success ? 'success' : 'error',
@@ -1136,8 +1362,22 @@ function handlePipelineEvent(eventType, data) {
             data.extracted_text ? `Extracted: "${data.extracted_text}"` : '',
             undefined
         );
+
+        // Add to friendly activity feed
+        addMonitorEntry(data.success ? 'success' : 'error', 'Outcome', data.message);
+
+        if (data.screenshot_path) {
+            updateScreenshot(data.screenshot_path, data.step_id);
+        }
+        
+        document.getElementById('mission-status').textContent = 'Running';
+        document.getElementById('mission-status').style.color = 'var(--amber)';
     } else if (eventType === 'error') {
         addStreamCard('error', 'SYSTEM ERROR', data.message, '', undefined);
+        addMonitorEntry('error', 'Alert', `System Error: ${data.message}`);
+        
+        document.getElementById('mission-status').textContent = 'Failed';
+        document.getElementById('mission-status').style.color = 'var(--red)';
     } else if (eventType === 'final_summary') {
         // Also populate the draft card from the final_summary if it has simple_draft
         if (data.simple_draft) {
@@ -1147,6 +1387,10 @@ function handlePipelineEvent(eventType, data) {
             card.classList.add('visible');
         }
         renderDraftReport(data);
+        addMonitorEntry('success', 'Timeline', 'Generated Final Investigation Report');
+        
+        document.getElementById('mission-status').textContent = 'Completed';
+        document.getElementById('mission-status').style.color = 'var(--green)';
     } else if (eventType === 'demo_thought') {
         addDemoThought(data.message);
     } else if (eventType === 'execution_plan') {
@@ -1154,6 +1398,9 @@ function handlePipelineEvent(eventType, data) {
         addDemoThought('Reviewing generated execution plan');
     } else if (eventType === 'plan_progress') {
         updatePlanProgress(data);
+        if (data.screenshot_path) {
+            updateScreenshot(data.screenshot_path, data.step_id);
+        }
     }
 }
 
@@ -1506,6 +1753,11 @@ async function loadRunDetail(runId) {
         panel.innerHTML = `<div class="run-detail-panel"><h3>Error</h3><pre>${escHtml(String(e))}</pre></div>`;
     }
 }
+
+// Initialize on load
+window.addEventListener('DOMContentLoaded', () => {
+    setViewMode('manager');
+});
 </script>
 </body>
 </html>

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,6 +20,8 @@ from monitor import get_run_history, get_run_detail
 
 app = FastAPI(title="Project Sane v3")
 templates = Jinja2Templates(directory="templates")
+app.mount("/logs", StaticFiles(directory="logs"), name="logs")
+app.mount("/output", StaticFiles(directory="output"), name="output")
 
 
 @app.on_event("startup")
