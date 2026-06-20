@@ -809,9 +809,9 @@ class JobManager:
                 return True
 
             try:
-                should_continue = await asyncio.wait_for(do_planning(), timeout=45.0)
+                should_continue = await asyncio.wait_for(do_planning(), timeout=90.0)
             except asyncio.TimeoutError:
-                raise PlanningError("Planning stage timed out after 45 seconds.", "planning_timeout")
+                raise PlanningError("Planning stage timed out after 90 seconds.", "planning_timeout")
 
             if not should_continue:
                 return
