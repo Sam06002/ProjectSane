@@ -465,7 +465,12 @@ class BrowserManager:
 
     async def _connect(self) -> None:
         if not self.playwright:
-            self.playwright = await async_playwright().start()
+            try:
+                self.playwright = await asyncio.wait_for(
+                    async_playwright().start(), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                raise BrowserError("Playwright startup timed out after 10 seconds.", "playwright_start")
         print(f"[Browser] Connecting to CDP on port {CDP_PORT}...")
         self.browser = await self.playwright.chromium.connect_over_cdp(
             f"http://localhost:{CDP_PORT}",
@@ -505,28 +510,60 @@ class BrowserManager:
                 else:
                     raise BrowserError(f"Failed to connect over CDP: {e}", "cdp_connect")
 
+        # Lightweight health check: verify we can access contexts
+        if self.browser:
+            try:
+                _ = self.browser.contexts
+            except Exception:
+                print("[Browser] Health check failed — stale browser handle. Reconnecting...")
+                await self._reset_handles()
+                self._kill_port(CDP_PORT)
+                await asyncio.sleep(1)
+                self._launch_chrome()
+                opened = await self._wait_for_port(timeout_s=8.0)
+                if not opened:
+                    raise BrowserError(f"Chrome did not reopen CDP port {CDP_PORT} after health-check reset.", "browser_start")
+                await asyncio.sleep(2)
+                await self._connect()
+
     async def create_run_context(self) -> BrowserRunContext:
         """Creates a run page, preferring isolated contexts when CDP supports them."""
         await self.ensure_connected()
         if not self.browser:
             raise BrowserError("Browser not initialized.", "create_run_context")
 
-        default_context = self.browser.contexts[0]
-        # Clean up any leftover duplicate/support pages from previous runs to prevent tab clutter
+        try:
+            default_context = self.browser.contexts[0]
+        except (IndexError, Exception) as e:
+            raise BrowserError(f"No browser contexts available (Chrome may have closed): {e}", "create_run_context")
+
+        # Clean up any leftover duplicate/support pages from previous runs to prevent tab clutter.
+        # Each page is handled independently — a stale handle on one page must NOT crash the pipeline.
         try:
             from db_utils import is_duplicate_database
-            for p in list(default_context.pages):
-                url = p.url
-                if len(default_context.pages) <= 1:
+            pages_snapshot = []
+            try:
+                pages_snapshot = list(default_context.pages)
+            except Exception as pe:
+                print(f"[Browser] Could not snapshot pages (stale context): {pe}")
+            for p in pages_snapshot:
+                try:
+                    url = p.url
+                    page_count = len(default_context.pages)
+                except Exception:
+                    # Page handle is stale — skip it silently
+                    continue
+                if page_count <= 1:
                     break
                 if "/_odoo/support" in url or is_duplicate_database(url) or "sane1-support" in url or "-support-" in url:
                     print(f"[Browser] Closing leftover page from previous run: {url}")
                     try:
                         await asyncio.wait_for(p.close(), timeout=3.0)
                     except Exception as ce:
-                        print(f"[Browser] Failed to close page cleanly: {ce}")
+                        print(f"[Browser] Failed to close page cleanly (ignoring): {ce}")
         except Exception as e:
-            print(f"[Browser] Error cleaning up leftover pages: {e}")
+            # Never let cleanup kill the pipeline
+            print(f"[Browser] Non-fatal error cleaning up leftover pages: {e}")
 
         cookies = []
         try:

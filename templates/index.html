@@ -788,30 +788,11 @@
             <div class="form-section" style="padding: 16px 18px; border-bottom: 1px solid var(--border); background: var(--bg3);">
                 <div class="form-group">
                     <label>Database URL</label>
-                    <input type="text" id="dbUrl" value="https://sane1.odoo.com/" placeholder="yourcompany.odoo.com"/>
+                    <input type="text" id="dbUrl" value="" placeholder="yourcompany.odoo.com"/>
                 </div>
                 <div class="form-group" style="margin-top: 10px;">
                     <label>Support Ticket</label>
-                    <textarea id="ticket" style="height: 120px;">You are operating inside a duplicated Odoo database.
-
-Objective:
-Demonstrate autonomous navigation.
-
-Steps:
-
-1. Open Accounting.
-2. Wait 2 seconds.
-3. Open Configuration.
-4. Wait 2 seconds.
-5. Open Taxes.
-6. Wait 2 seconds.
-7. Return to Accounting dashboard.
-8. Return to the main application menu.
-9. Stop execution.
-
-Do not modify any data.
-Navigation only.
-Announce each action before performing it.</textarea>
+                    <textarea id="ticket" style="height: 120px;" placeholder="Paste the support ticket text here..."></textarea>
                 </div>
                 <button class="run-btn" id="runBtn" onclick="runPipeline()" style="margin-top: 8px;">⚡ Execute Pipeline</button>
             </div>
@@ -1660,55 +1641,70 @@ async function runPipeline() {
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const chunks = buffer.split('\n\n');
-            buffer = chunks.pop();
-
-            for (const chunk of chunks) {
-                if (!chunk.trim()) continue;
-
-                const dataMatch  = chunk.match(/^data: (.+)$/m);
-                const eventMatch = chunk.match(/^event: (.+)$/m);
-                if (!dataMatch) continue;
-
-                let parsed;
-                try { parsed = JSON.parse(dataMatch[1].trim()); } catch { continue; }
-
-                if (parsed.type === 'thinking') {
-                    appendThinkingToken(parsed.step, parsed.token);
-                    continue;
-                }
-
-                if (parsed.step_id) finaliseThinking(parsed.step_id);
-
-                const eventType = eventMatch ? eventMatch[1].trim() : '';
-
-                if (eventType === 'state_change') {
-                    const ns = parsed.new_state || '';
-                    document.getElementById('statusLabel').textContent = ns;
-                    addMonitorEntry('info', 'state', `Status: ${ns}`);
-                    // Mirror terminal states to Mission Bar immediately
-                    if (ns === 'FAILED' || ns === 'failed') {
-                        document.getElementById('mission-status').textContent = 'Failed';
-                        document.getElementById('mission-status').style.color = 'var(--red)';
-                    } else if (ns === 'COMPLETED' || ns === 'completed') {
-                        document.getElementById('mission-status').textContent = 'Completed';
-                        document.getElementById('mission-status').style.color = 'var(--green)';
-                    }
-                    continue;
-                }
-
-                if (['monitor_error','monitor_warning','monitor_event','monitor_engine'].includes(eventType)) {
-                    handleMonitorEvent(eventType, parsed);
-                    continue;
-                }
-
-                handlePipelineEvent(eventType, parsed);
+        let lastEventTime = Date.now();
+        const watchdogInterval = setInterval(() => {
+            if (Date.now() - lastEventTime > 60000) {
+                showToast('⚠ Pipeline connection may be stalled...');
             }
+        }, 10000);
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                lastEventTime = Date.now();
+
+                buffer += decoder.decode(value, { stream: true });
+                const chunks = buffer.split('\n\n');
+                buffer = chunks.pop();
+
+                for (const chunk of chunks) {
+                    if (!chunk.trim()) continue;
+                    
+                    lastEventTime = Date.now();
+
+                    const dataMatch  = chunk.match(/^data: (.+)$/m);
+                    const eventMatch = chunk.match(/^event: (.+)$/m);
+                    if (!dataMatch) continue;
+
+                    let parsed;
+                    try { parsed = JSON.parse(dataMatch[1].trim()); } catch { continue; }
+
+                    if (parsed.type === 'thinking') {
+                        appendThinkingToken(parsed.step, parsed.token);
+                        continue;
+                    }
+
+                    if (parsed.step_id) finaliseThinking(parsed.step_id);
+
+                    const eventType = eventMatch ? eventMatch[1].trim() : '';
+
+                    if (eventType === 'state_change') {
+                        const ns = parsed.new_state || '';
+                        document.getElementById('statusLabel').textContent = ns;
+                        addMonitorEntry('info', 'state', `Status: ${ns}`);
+                        // Mirror terminal states to Mission Bar immediately
+                        if (ns === 'FAILED' || ns === 'failed') {
+                            document.getElementById('mission-status').textContent = 'Failed';
+                            document.getElementById('mission-status').style.color = 'var(--red)';
+                        } else if (ns === 'COMPLETED' || ns === 'completed') {
+                            document.getElementById('mission-status').textContent = 'Completed';
+                            document.getElementById('mission-status').style.color = 'var(--green)';
+                        }
+                        continue;
+                    }
+
+                    if (['monitor_error','monitor_warning','monitor_event','monitor_engine'].includes(eventType)) {
+                        handleMonitorEvent(eventType, parsed);
+                        continue;
+                    }
+
+                    handlePipelineEvent(eventType, parsed);
+                }
+            }
+        } finally {
+            clearInterval(watchdogInterval);
         }
     } catch (err) {
         addStreamCard('error', 'Network Error', String(err), '', undefined);
@@ -1720,7 +1716,12 @@ async function runPipeline() {
         document.getElementById('liveDot').classList.remove('active');
         document.getElementById('headerDot').classList.remove('active');
         document.getElementById('headerDot').classList.add('done');
-        document.getElementById('statusLabel').textContent = 'Done';
+        
+        // Avoid overwriting terminal state labels
+        const currentLabel = document.getElementById('statusLabel').textContent;
+        if (currentLabel !== 'FAILED' && currentLabel !== 'COMPLETED') {
+            document.getElementById('statusLabel').textContent = 'Done';
+        }
     }
 }
 

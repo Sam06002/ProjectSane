@@ -100,6 +100,34 @@ class JobManager:
     @classmethod
     async def _execute_job_pipeline(cls, job: BackgroundJob) -> None:
         """The actual background workflow worker executing Odoo Support Automation."""
+        try:
+            await asyncio.wait_for(cls._execute_job_pipeline_inner(job), timeout=300.0)
+        except asyncio.TimeoutError:
+            logger.error(f"Job {job.run_id} timed out after 300 seconds.")
+            job.error = "Job execution timed out after 300 seconds."
+            try:
+                await job.emit_event("error", {"message": "Job execution timed out after 300 seconds."})
+            except Exception:
+                pass
+            try:
+                await job.transition_to(RunState.FAILED)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Job {job.run_id} failed with unhandled exception in outer wrapper: {e}", exc_info=True)
+            job.error = str(e)
+            try:
+                await job.emit_event("error", {"message": f"Job execution failed: {e}"})
+            except Exception:
+                pass
+            try:
+                await job.transition_to(RunState.FAILED)
+            except Exception:
+                pass
+
+    @classmethod
+    async def _execute_job_pipeline_inner(cls, job: BackgroundJob) -> None:
+        """The actual logic of the background workflow worker."""
         from ai_agent import AIAgent
         from logger import RunLogger
         from monitor import ObservationLayer
@@ -318,8 +346,6 @@ class JobManager:
                         await page_obj.wait_for_load_state("load", timeout=8000)
                     except Exception:
                         pass
-
-
 
             # Gateway cookie-sync helper
             async def authenticate_via_support_gateway(active_target_url):
@@ -545,7 +571,13 @@ class JobManager:
                 return list(ai_agent.analyse_ticket_stream(job.ticket_text, run_logger=run_log))
             
             loop = asyncio.get_event_loop()
-            tokens = await loop.run_in_executor(None, triage_token_collector)
+            try:
+                tokens = await asyncio.wait_for(
+                    loop.run_in_executor(None, triage_token_collector),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                raise PlanningError("Groq ticket analysis stream timed out after 30 seconds.", "groq_timeout")
             
             for token in tokens:
                 triage_stream_text += token
@@ -652,16 +684,55 @@ class JobManager:
             await job.emit_event("final_summary", report)
             await job.transition_to(RunState.COMPLETED)
 
+        except asyncio.CancelledError:
+            logger.warning(f"Job {job.run_id} was cancelled or timed out.")
+            job.error = "Job execution timed out after 300 seconds."
+            try:
+                await obs.record_error("Job execution timed out after 300 seconds.", context="job_worker")
+            except Exception:
+                pass
+            try:
+                obs.finalise()
+            except Exception:
+                pass
+            try:
+                run_log.save()
+            except Exception:
+                pass
+            try:
+                await job.emit_event("error", {"message": "Job execution timed out after 300 seconds."})
+            except Exception:
+                pass
+            try:
+                await job.transition_to(RunState.FAILED)
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.error(f"Job {job.run_id} failed: {e}", exc_info=True)
             job.error = str(e)
-            await obs.record_error(str(e), context="job_worker")
-            obs.finalise()
-            run_log.save()
+            try:
+                await obs.record_error(str(e), context="job_worker")
+            except Exception:
+                pass
+            try:
+                obs.finalise()
+            except Exception:
+                pass
+            try:
+                run_log.save()
+            except Exception:
+                pass
             
             # Emit error SSE
-            await job.emit_event("error", {"message": f"Job execution failed: {e}"})
-            await job.transition_to(RunState.FAILED)
+            try:
+                await job.emit_event("error", {"message": f"Job execution failed: {e}"})
+            except Exception:
+                pass
+            try:
+                await job.transition_to(RunState.FAILED)
+            except Exception:
+                pass
         finally:
             job.finished_at = datetime.now(timezone.utc)
             # Close isolated context cleanly
