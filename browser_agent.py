@@ -408,6 +408,16 @@ class BrowserManager:
         print(f"[Browser] Launching Chrome on CDP port {CDP_PORT}...")
         agent_default = os.path.join(AGENT_PROFILE, "Default")
         os.makedirs(agent_default, exist_ok=True)
+
+        # Sync Local State key seed to allow encrypted cookie decryption on macOS
+        local_state_src = os.path.join(os.path.dirname(os.path.dirname(SOURCE_COOKIES)), "Local State")
+        local_state_dest = os.path.join(AGENT_PROFILE, "Local State")
+        if os.path.exists(local_state_src):
+            try:
+                shutil.copy2(local_state_src, local_state_dest)
+                print("[Browser] Chrome Local State synced.")
+            except Exception as e:
+                print(f"[Browser] Local State sync warning: {e}")
         
         if os.path.exists(SOURCE_COOKIES):
             shutil.copy2(SOURCE_COOKIES, os.path.join(agent_default, "Cookies"))
