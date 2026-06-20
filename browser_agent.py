@@ -309,7 +309,7 @@ async def human_like_fill(page: Page, selector: str, value: str, timeout: int = 
         await page.fill(selector, value)
 
 
-async def human_like_click_locator(page: Page, locator, timeout: int = 10000) -> None:
+async def human_like_click_locator(page: Page, locator, timeout: int = 10000, **kwargs) -> None:
     await locator.wait_for(state="visible", timeout=timeout)
     handle = await locator.element_handle()
     if handle is None:
@@ -339,7 +339,7 @@ async def human_like_click_locator(page: Page, locator, timeout: int = 10000) ->
         await page.wait_for_timeout(500)
 
         # Execute click
-        await locator.click(timeout=timeout)
+        await locator.click(timeout=timeout, **kwargs)
 
         # Remove highlight
         try:
@@ -352,7 +352,7 @@ async def human_like_click_locator(page: Page, locator, timeout: int = 10000) ->
     else:
         # Existing behavior preserved
         await page.mouse.move(target_x, target_y)
-        await locator.click(timeout=timeout)
+        await locator.click(timeout=timeout, **kwargs)
 
 
 class BrowserRunContext:
@@ -458,7 +458,8 @@ class BrowserManager:
             self.playwright = await async_playwright().start()
         print(f"[Browser] Connecting to CDP on port {CDP_PORT}...")
         self.browser = await self.playwright.chromium.connect_over_cdp(
-            f"http://localhost:{CDP_PORT}"
+            f"http://localhost:{CDP_PORT}",
+            timeout=15000
         )
 
     async def ensure_connected(self) -> None:
@@ -510,7 +511,10 @@ class BrowserManager:
                     break
                 if "/_odoo/support" in url or is_duplicate_database(url) or "sane1-support" in url or "-support-" in url:
                     print(f"[Browser] Closing leftover page from previous run: {url}")
-                    await p.close()
+                    try:
+                        await asyncio.wait_for(p.close(), timeout=3.0)
+                    except Exception as ce:
+                        print(f"[Browser] Failed to close page cleanly: {ce}")
         except Exception as e:
             print(f"[Browser] Error cleaning up leftover pages: {e}")
 

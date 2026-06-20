@@ -162,9 +162,16 @@ async def stream_run(run_id: str):
         # 1. Replay history logs first
         for msg in job.history:
             yield msg
-            
-        # 2. Stream new logs
+
+        # 2. Stream new logs with a hard 5-minute timeout guard
+        HARD_TIMEOUT_S = 300  # 5 minutes max stream duration
+        start_t = asyncio.get_event_loop().time()
         while True:
+            # Check hard timeout first
+            if asyncio.get_event_loop().time() - start_t > HARD_TIMEOUT_S:
+                yield f"event: error\ndata: {{\"message\": \"Stream timed out after {HARD_TIMEOUT_S}s\"}}\n\n"
+                break
+            # Terminal state: drain remaining queue then stop
             if job.state in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED) and job.queue.empty():
                 break
             try:
@@ -172,8 +179,10 @@ async def stream_run(run_id: str):
                 yield msg
                 job.queue.task_done()
             except asyncio.TimeoutError:
+                # Send SSE comment as keepalive so browser doesn't close the connection
+                yield ": keepalive\n\n"
                 continue
-                
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",

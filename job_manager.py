@@ -226,12 +226,12 @@ class JobManager:
                 return None
 
             # Click helper to force navigation in the same tab instead of opening a new window/tab
-            async def click_in_same_tab(locator):
+            async def click_in_same_tab(locator, **kwargs):
                 try:
                     await locator.evaluate("el => { el.removeAttribute('target'); if (el.form) el.form.removeAttribute('target'); }")
                 except Exception as e:
                     logger.debug(f"Failed to strip target from element: {e}")
-                await human_like_click_locator(page, locator)
+                await human_like_click_locator(page, locator, **kwargs)
 
             # Custom helper to poll and wait for URL to match a duplicate database pattern
             async def wait_for_duplicate_url(timeout_ms: int):
@@ -458,7 +458,7 @@ class JobManager:
 
                     await job.emit_raw(StreamManager.emit_thinking(0, "Gateway", "Creating database copy..."))
                     await job.emit_raw(StreamManager.emit_demo_thought("Creating database copy"))
-                    await click_in_same_tab(dup_btn)
+                    await click_in_same_tab(dup_btn, no_wait_after=True)
                     
                     # Check confirmation modal
                     try:
@@ -485,7 +485,7 @@ class JobManager:
                 # Keep the full URL (including query parameters like ?db=...) to preserve the database identifier
                 active_db_url = page.url
                 await authenticate_via_support_gateway(active_db_url)
-                obs.db_url = active_db_url
+                obs._db_url = active_db_url
 
             # Transition Frontend to Backend dashboard
             transition_attempts = 0

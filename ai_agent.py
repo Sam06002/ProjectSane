@@ -158,6 +158,7 @@ class AIAgent:
                 max_tokens=max_tokens,
                 temperature=0.1,
                 stream=True,
+                timeout=15.0,
             )
             for chunk in stream:
                 token = chunk.choices[0].delta.content or ""

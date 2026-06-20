@@ -1669,8 +1669,17 @@ async function runPipeline() {
                 const eventType = eventMatch ? eventMatch[1].trim() : '';
 
                 if (eventType === 'state_change') {
-                    document.getElementById('statusLabel').textContent = parsed.new_state;
-                    addMonitorEntry('info', 'state', `Status: ${parsed.new_state}`);
+                    const ns = parsed.new_state || '';
+                    document.getElementById('statusLabel').textContent = ns;
+                    addMonitorEntry('info', 'state', `Status: ${ns}`);
+                    // Mirror terminal states to Mission Bar immediately
+                    if (ns === 'FAILED' || ns === 'failed') {
+                        document.getElementById('mission-status').textContent = 'Failed';
+                        document.getElementById('mission-status').style.color = 'var(--red)';
+                    } else if (ns === 'COMPLETED' || ns === 'completed') {
+                        document.getElementById('mission-status').textContent = 'Completed';
+                        document.getElementById('mission-status').style.color = 'var(--green)';
+                    }
                     continue;
                 }
 
