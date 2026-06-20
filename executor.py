@@ -33,6 +33,8 @@ SELECTOR_REGISTRY = {
     "settings": "a:has-text('Settings'), a[data-menu-xmlid='base.menu_administration']",
     "apps": "a:has-text('Apps'), a[data-menu-xmlid='base.menu_management']",
     "modules": "a:has-text('Modules')",
+    "Apps menu": "a.o_menu_toggle, .o_menu_toggle, a[title='Home Menu'], a.o_app_drawer_toggle, .o_app_drawer_toggle, a[title='Go to your Odoo Apps'], .o_navbar_apps_menu",
+    "apps menu": "a.o_menu_toggle, .o_menu_toggle, a[title='Home Menu'], a.o_app_drawer_toggle, .o_app_drawer_toggle, a[title='Go to your Odoo Apps'], .o_navbar_apps_menu",
 
     # ── CRUD buttons ─────────────────────────────────────────────────────
     "save_button": "button:has-text('Save'), .o_form_button_save",

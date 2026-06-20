@@ -71,3 +71,22 @@ class StreamManager:
         if message:
             data["message"] = message
         return StreamManager.format_sse("plan_progress", data)
+
+    @staticmethod
+    def emit_browser_state(state: str, message: str = "") -> str:
+        """
+        Signals the browser capture pane state to the frontend.
+        Valid states: not_started | launching | awaiting_login | active | idle | failed | completed
+        """
+        return StreamManager.format_sse("browser_state", {
+            "state": state,
+            "message": message
+        })
+
+    @staticmethod
+    def emit_heartbeat(stage: str = "") -> str:
+        """
+        Low-overhead keepalive event emitted during long waits (e.g. manual login).
+        Keeps the frontend transport watchdog alive without conveying business state.
+        """
+        return StreamManager.format_sse("heartbeat", {"stage": stage})

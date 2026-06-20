@@ -788,17 +788,17 @@
             <div class="form-section" style="padding: 16px 18px; border-bottom: 1px solid var(--border); background: var(--bg3);">
                 <div class="form-group">
                     <label>Database URL</label>
-                    <input type="text" id="dbUrl" value="" placeholder="yourcompany.odoo.com"/>
+                    <input type="text" id="dbUrl" value="" placeholder="yourcompany.odoo.com" autocomplete="off"/>
                 </div>
                 <div class="form-group" style="margin-top: 10px;">
                     <label>Support Ticket</label>
-                    <textarea id="ticket" style="height: 120px;" placeholder="Paste the support ticket text here..."></textarea>
+                    <textarea id="ticket" style="height: 120px;" placeholder="Paste the support ticket text here..." autocomplete="off"></textarea>
                 </div>
                 <button class="run-btn" id="runBtn" onclick="runPipeline()" style="margin-top: 8px;">⚡ Execute Pipeline</button>
             </div>
             
             <!-- Final Draft Card (Concise Summary of Report) -->
-            <div class="final-draft-card" id="finalDraftCard" style="margin: 12px; display: none;">
+            <div class="final-draft-card" id="finalDraftCard" style="margin: 12px;">
                 <div class="draft-card-header">
                     <span class="draft-card-badge">✓ Resolution Draft</span>
                 </div>
@@ -937,6 +937,32 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// Global safety wrappers
+function safeSet(id, prop, value) {
+    const el = document.getElementById(id);
+    if (el) el[prop] = value;
+}
+function safeStyle(id, prop, value) {
+    const el = document.getElementById(id);
+    if (el) el.style[prop] = value;
+}
+function safeClassAdd(id, className) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add(className);
+}
+function safeClassRemove(id, className) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove(className);
+}
+function safeClassToggle(id, className, force) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle(className, force);
+}
+function safeQueryStyle(selector, prop, value) {
+    const el = document.querySelector(selector);
+    if (el) el.style[prop] = value;
+}
+
 // ── View mode toggle ───────────────────────────────────────────────────────────
 function setViewMode(mode) {
     const isDev = mode === 'developer';
@@ -946,71 +972,172 @@ function setViewMode(mode) {
     const btnDeveloper = document.getElementById('btn-view-developer');
     
     if (isDev) {
-        btnDeveloper.style.background = 'var(--blue)';
-        btnDeveloper.style.color = '#080c14';
-        btnManager.style.background = 'transparent';
-        btnManager.style.color = 'var(--muted2)';
+        if (btnDeveloper) {
+            btnDeveloper.style.background = 'var(--blue)';
+            btnDeveloper.style.color = '#080c14';
+        }
+        if (btnManager) {
+            btnManager.style.background = 'transparent';
+            btnManager.style.color = 'var(--muted2)';
+        }
     } else {
-        btnManager.style.background = 'var(--blue)';
-        btnManager.style.color = '#080c14';
-        btnDeveloper.style.background = 'transparent';
-        btnDeveloper.style.color = 'var(--muted2)';
+        if (btnManager) {
+            btnManager.style.background = 'var(--blue)';
+            btnManager.style.color = '#080c14';
+        }
+        if (btnDeveloper) {
+            btnDeveloper.style.background = 'transparent';
+            btnDeveloper.style.color = 'var(--muted2)';
+        }
     }
 }
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(name) {
-    document.getElementById('tab-run').style.display  = name === 'run'  ? '' : 'none';
-    document.getElementById('tab-runs').style.display = name === 'runs' ? '' : 'none';
-    document.getElementById('missionBar').style.display = name === 'run' ? 'flex' : 'none';
-    document.getElementById('tab-run-btn').classList.toggle('active',  name === 'run');
-    document.getElementById('tab-runs-btn').classList.toggle('active', name === 'runs');
+    const tabRun = document.getElementById('tab-run');
+    if (tabRun) tabRun.style.display  = name === 'run'  ? '' : 'none';
+    const tabRuns = document.getElementById('tab-runs');
+    if (tabRuns) tabRuns.style.display = name === 'runs' ? '' : 'none';
+    const missionBar = document.getElementById('missionBar');
+    if (missionBar) missionBar.style.display = name === 'run' ? 'flex' : 'none';
+    
+    const tabRunBtn = document.getElementById('tab-run-btn');
+    if (tabRunBtn) tabRunBtn.classList.toggle('active',  name === 'run');
+    const tabRunsBtn = document.getElementById('tab-runs-btn');
+    if (tabRunsBtn) tabRunsBtn.classList.toggle('active', name === 'runs');
+    
     if (name === 'runs') loadRuns();
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────────
 function showToast(msg) {
     const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 2400);
+    if (t) {
+        t.textContent = msg;
+        t.classList.add('show');
+        setTimeout(() => {
+            const el = document.getElementById('toast');
+            if (el) el.classList.remove('show');
+        }, 2400);
+    }
 }
 
 // ── Monitor counters ───────────────────────────────────────────────────────────
 let mon = { errors: 0, warnings: 0, events: 0, calls: 0 };
+let activeRun = null;
+
+function cleanupRun(run) {
+    if (!run) return;
+    run.terminal = true;
+    if (run.watchdogId) {
+        clearInterval(run.watchdogId);
+        run.watchdogId = null;
+    }
+    if (run.reader) {
+        try {
+            run.reader.cancel().catch(() => {});
+        } catch (e) {}
+    }
+    if (run.abortController) {
+        try {
+            run.abortController.abort();
+        } catch (e) {}
+    }
+}
+
+function updateBrowserCaptureState(state, message) {
+    const placeholder = document.getElementById('screenshot-placeholder');
+    const label = document.getElementById('screenshot-step-label');
+    const img = document.getElementById('live-screenshot');
+
+    const stateMap = {
+        'not_started': {
+            icon: '🌐',
+            title: 'Browser instance not started yet',
+            subtitle: 'Start the pipeline to initiate live browser visual tracking'
+        },
+        'launching': {
+            icon: '🚀',
+            title: 'Starting browser...',
+            subtitle: message || 'Initializing headless Chromium with CDP debug connection'
+        },
+        'awaiting_login': {
+            icon: '⏳',
+            title: 'Waiting for manual login...',
+            subtitle: message || 'Please perform manual login on the browser overlay'
+        },
+        'active': {
+            icon: '⚡',
+            title: 'Live browser session active',
+            subtitle: message || 'Tracking page actions in real-time'
+        },
+        'completed': {
+            icon: '✓',
+            title: 'Session completed',
+            subtitle: message || 'Browser automation has finished'
+        },
+        'failed': {
+            icon: '✗',
+            title: 'Browser session failed',
+            subtitle: message || 'An error occurred during browser execution'
+        }
+    };
+
+    const details = stateMap[state] || { icon: '🌐', title: state, subtitle: message || '' };
+
+    if (label) {
+        label.textContent = details.title;
+    }
+
+    if (placeholder) {
+        const hasImage = img && img.src && img.style.display !== 'none';
+        
+        if (state === 'active' && hasImage) {
+            placeholder.style.display = 'none';
+        } else {
+            placeholder.style.display = 'flex';
+            if (img) img.style.display = 'none';
+            
+            placeholder.innerHTML = `
+                <span style="font-size: 32px; opacity: 0.3;">${details.icon}</span>
+                <span style="font-size: 12px; font-weight: 500;">${escHtml(details.title)}</span>
+                <span style="font-size: 10px; color: var(--muted2);">${escHtml(details.subtitle)}</span>
+            `;
+        }
+    }
+}
 
 function resetMonitor() {
     mon = { errors: 0, warnings: 0, events: 0, calls: 0 };
     
     // Mission Bar
-    document.getElementById('mission-text').textContent = 'Investigating support ticket...';
-    document.getElementById('mission-text').title = 'Investigating support ticket...';
-    document.getElementById('mission-step').textContent = '—';
-    document.getElementById('mission-status').textContent = 'Starting...';
-    document.getElementById('mission-status').style.color = 'var(--amber)';
-    document.getElementById('mission-confidence').textContent = '—';
+    safeSet('mission-text', 'textContent', 'Investigating support ticket...');
+    safeSet('mission-text', 'title', 'Investigating support ticket...');
+    safeSet('mission-step', 'textContent', '—');
+    safeSet('mission-status', 'textContent', 'Starting...');
+    safeStyle('mission-status', 'color', 'var(--amber)');
+    safeSet('mission-confidence', 'textContent', '—');
 
     // Dev View mode stats
     ['errors', 'warnings', 'events', 'calls'].forEach(k => {
-        const el = document.getElementById('stat-' + k);
-        if (el) el.textContent = '0';
+        safeSet('stat-' + k, 'textContent', '0');
     });
 
-    document.getElementById('monitor-feed').innerHTML = '';
-    document.getElementById('runIdLabel').textContent = '—';
-    document.getElementById('liveDot').classList.remove('active');
+    safeSet('monitor-feed', 'innerHTML', '');
+    safeClassRemove('liveDot', 'active');
     
     // Reset address bar
-    const dbUrlVal = document.getElementById('dbUrl').value || 'https://shsri.odoo.com';
-    document.getElementById('browser-address-bar').textContent = dbUrlVal;
+    const dbUrlEl = document.getElementById('dbUrl');
+    const dbUrlVal = dbUrlEl ? (dbUrlEl.value || 'https://shsri.odoo.com') : 'https://shsri.odoo.com';
+    safeSet('browser-address-bar', 'textContent', dbUrlVal);
 
     updateScreenshot(null, null);
+    updateBrowserCaptureState('not_started', '');
 }
 
 function incMonitor(key) {
     mon[key]++;
-    const el = document.getElementById('stat-' + key);
-    if (el) el.textContent = mon[key];
+    safeSet('stat-' + key, 'textContent', mon[key]);
 }
 
 function updateScreenshot(path, stepId) {
@@ -1019,19 +1146,21 @@ function updateScreenshot(path, stepId) {
     const label = document.getElementById('screenshot-step-label');
     if (path) {
         const srcPath = path.startsWith('/') ? path : '/' + path;
-        img.src = `${srcPath}?t=${Date.now()}`;
-        img.style.display = 'block';
-        placeholder.style.display = 'none';
-        if (stepId) {
+        if (img) {
+            img.src = `${srcPath}?t=${Date.now()}`;
+            img.style.display = 'block';
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        if (label) {
             label.textContent = `Step ${stepId} Screenshot`;
-        } else {
-            label.textContent = `Live View`;
         }
     } else {
-        img.src = "";
-        img.style.display = 'none';
-        placeholder.style.display = 'flex';
-        label.textContent = 'Awaiting capture';
+        if (img) {
+            img.src = "";
+            img.style.display = 'none';
+        }
+        if (placeholder) placeholder.style.display = 'flex';
+        if (label) label.textContent = 'Awaiting capture';
     }
 }
 
@@ -1067,6 +1196,7 @@ function getFriendlyActivityMessage(actionType, target, success) {
 
 function addMonitorEntry(cls, ctx, msg) {
     const feed = document.getElementById('monitor-feed');
+    if (!feed) return;
     const ph = feed.querySelector('div[style]');
     if (ph) ph.remove();
     const now = new Date().toLocaleTimeString();
@@ -1105,7 +1235,6 @@ function handleMonitorEvent(type, data) {
         incMonitor('calls');
         addMonitorEntry('engine', 'Cognitive Action', `AI brain analyzed context for: ${data.purpose}`);
     }
-    if (data.run_id) document.getElementById('runIdLabel').textContent = data.run_id.slice(0, 14) + '…';
 }
 
 // ── Thinking helpers ───────────────────────────────────────────────────────────
@@ -1149,38 +1278,41 @@ function escHtml(s) {
 
 // ── Demo mode plan and thought stream ─────────────────────────────────────────
 function resetDemoPanels() {
-    document.getElementById('demoThoughtPanel').classList.remove('visible');
-    document.getElementById('demoThoughtFeed').innerHTML = '';
-    document.getElementById('planViewer').classList.remove('visible');
-    document.getElementById('planSummary').innerHTML = '';
-    document.getElementById('planSteps').innerHTML = '';
-    document.getElementById('planStatus').textContent = 'Awaiting plan';
+    safeClassRemove('demoThoughtPanel', 'visible');
+    safeSet('demoThoughtFeed', 'innerHTML', '');
+    safeClassRemove('planViewer', 'visible');
+    safeSet('planSummary', 'innerHTML', '');
+    safeSet('planSteps', 'innerHTML', '<div style="color:var(--muted); font-size:11px; text-align:center; padding: 20px 0;">No active plan loaded</div>');
+    safeSet('planStatus', 'textContent', 'Awaiting plan');
 }
 
 function addDemoThought(message) {
     if (!message) return;
     const panel = document.getElementById('demoThoughtPanel');
+    if (panel) panel.classList.add('visible');
     const feed = document.getElementById('demoThoughtFeed');
-    panel.classList.add('visible');
-    const el = document.createElement('div');
-    el.className = 'demo-thought';
-    el.textContent = message;
-    feed.appendChild(el);
-    while (feed.children.length > 8) feed.removeChild(feed.firstChild);
-    feed.scrollTop = feed.scrollHeight;
+    if (feed) {
+        const el = document.createElement('div');
+        el.className = 'demo-thought';
+        el.textContent = message;
+        feed.appendChild(el);
+        while (feed.children.length > 8) feed.removeChild(feed.firstChild);
+        feed.scrollTop = feed.scrollHeight;
+    }
 }
 
 function renderExecutionPlan(plan) {
     const viewer = document.getElementById('planViewer');
-    const summary = document.getElementById('planSummary');
-    const steps = document.getElementById('planSteps');
-    viewer.classList.add('visible');
-    document.getElementById('planStatus').textContent = 'Ready';
-    summary.innerHTML = `
+    if (viewer) viewer.classList.add('visible');
+    safeSet('planStatus', 'textContent', 'Ready');
+    
+    const summaryHtml = `
         <strong>${escHtml(plan.summary || 'Generated support workflow')}</strong>
         ${escHtml(plan.module || 'Odoo')} · ${Math.round((plan.confidence || 0) * 100)}% confidence
     `;
-    steps.innerHTML = (plan.steps || []).map(step => `
+    safeSet('planSummary', 'innerHTML', summaryHtml);
+    
+    const stepsHtml = (plan.steps || []).map(step => `
         <div class="plan-step" id="plan-step-${step.id}" data-step="${step.id}">
             <div class="plan-step-num">☐</div>
             <div>
@@ -1189,47 +1321,55 @@ function renderExecutionPlan(plan) {
             </div>
         </div>
     `).join('');
+    safeSet('planSteps', 'innerHTML', stepsHtml);
 
     // Update Mission Bar
-    document.getElementById('mission-text').textContent = plan.summary || 'Generated support workflow';
-    document.getElementById('mission-text').title = plan.summary || 'Generated support workflow';
-    document.getElementById('mission-confidence').textContent = `${Math.round((plan.confidence || 0) * 100)}%`;
-    document.getElementById('mission-status').textContent = 'Ready';
-    document.getElementById('mission-status').style.color = 'var(--blue)';
+    safeSet('mission-text', 'textContent', plan.summary || 'Generated support workflow');
+    safeSet('mission-text', 'title', plan.summary || 'Generated support workflow');
+    safeSet('mission-confidence', 'textContent', `${Math.round((plan.confidence || 0) * 100)}%`);
+    safeSet('mission-status', 'textContent', 'Ready');
+    safeStyle('mission-status', 'color', 'var(--blue)');
 }
 
 function updatePlanProgress(data) {
-    document.getElementById('planViewer').classList.add('visible');
+    safeClassAdd('planViewer', 'visible');
     const status = data.status || 'active';
-    document.getElementById('planStatus').textContent =
-        status === 'done' ? 'In progress' : status.charAt(0).toUpperCase() + status.slice(1);
+    
+    safeSet('planStatus', 'textContent', 
+        status === 'done' ? 'In progress' : status.charAt(0).toUpperCase() + status.slice(1)
+    );
     
     // Update Mission Bar Status
     const statusLabel = status === 'done' || status === 'completed' ? 'Running' : status.charAt(0).toUpperCase() + status.slice(1);
-    document.getElementById('mission-status').textContent = statusLabel;
-    if (statusLabel === 'Running' || statusLabel === 'Active') {
-        document.getElementById('mission-status').style.color = 'var(--amber)';
-    } else if (statusLabel === 'Failed') {
-        document.getElementById('mission-status').style.color = 'var(--red)';
-    } else {
-        document.getElementById('mission-status').style.color = 'var(--green)';
+    if (!activeRun || !activeRun.terminal) {
+        safeSet('mission-status', 'textContent', statusLabel);
+        
+        let color = 'var(--green)';
+        if (statusLabel === 'Running' || statusLabel === 'Active') {
+            color = 'var(--amber)';
+        } else if (statusLabel === 'Failed') {
+            color = 'var(--red)';
+        }
+        safeStyle('mission-status', 'color', color);
     }
 
     const id = Number(data.step_id || 0);
     let stepEl = document.getElementById(`plan-step-${id}`);
     if (!stepEl && id > 0) {
         const steps = document.getElementById('planSteps');
-        stepEl = document.createElement('div');
-        stepEl.className = 'plan-step';
-        stepEl.id = `plan-step-${id}`;
-        stepEl.innerHTML = `
-            <div class="plan-step-num">☐</div>
-            <div>
-                <div class="plan-step-title">${escHtml(data.message || 'Executing browser action')}</div>
-                <div class="plan-step-meta">Live browser action</div>
-            </div>
-        `;
-        steps.appendChild(stepEl);
+        if (steps) {
+            stepEl = document.createElement('div');
+            stepEl.className = 'plan-step';
+            stepEl.id = `plan-step-${id}`;
+            stepEl.innerHTML = `
+                <div class="plan-step-num">☐</div>
+                <div>
+                    <div class="plan-step-title">${escHtml(data.message || 'Executing browser action')}</div>
+                    <div class="plan-step-meta">Live browser action</div>
+                </div>
+            `;
+            steps.appendChild(stepEl);
+        }
     }
     if (!stepEl) return;
     const numEl = stepEl.querySelector('.plan-step-num');
@@ -1240,7 +1380,7 @@ function updatePlanProgress(data) {
         
         // Update step count
         const total = document.querySelectorAll('#planSteps .plan-step').length;
-        document.getElementById('mission-step').textContent = `Step ${id} of ${total || '—'}`;
+        safeSet('mission-step', 'textContent', `Step ${id} of ${total || '—'}`);
     } else if (status === 'done' || status === 'completed') {
         stepEl.classList.remove('active', 'error');
         stepEl.classList.add('done');
@@ -1262,6 +1402,7 @@ const ICONS = {
 let cardCount = 0;
 function addStreamCard(cls, header, title, detail, stepNum) {
     const container = document.getElementById('stream-container');
+    if (!container) return null;
     const ph = container.querySelector('.stream-placeholder');
     if (ph) ph.remove();
     const el = document.createElement('div');
@@ -1287,7 +1428,6 @@ function addStreamCard(cls, header, title, detail, stepNum) {
 // ── Markdown parser for draft card ─────────────────────────────────────────────
 function parseDraftMarkdown(text) {
     if (!text) return '';
-    // Split into lines and process
     const lines = text.split('\n');
     let html = '';
     let inList = false;
@@ -1297,16 +1437,13 @@ function parseDraftMarkdown(text) {
             if (inList) { html += '</ul>'; inList = false; }
             continue;
         }
-        // Bullet items
         if (trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
             if (!inList) { html += '<ul>'; inList = true; }
             let content = trimmed.slice(2);
-            // Bold markers
             content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
             html += `<li>${content}</li>`;
         } else {
             if (inList) { html += '</ul>'; inList = false; }
-            // Bold markers in regular lines
             let content = trimmed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
             html += `<p style="margin:0 0 4px">${content}</p>`;
         }
@@ -1319,41 +1456,38 @@ function parseDraftMarkdown(text) {
 function handlePipelineEvent(eventType, data) {
     if (eventType === 'thinking_step') {
         addStreamCard('thinking', `Thinking${data.step_id > 0 ? ` · Step ${data.step_id}` : ''}`, data.intent, data.reasoning, data.step_id);
-
-        // Add to friendly activity feed
         addMonitorEntry('engine', 'Cognitive Step', `Brain planning: ${data.intent}`);
 
-        // Check if this thinking_step carries a simple_draft (Graph Complete event)
         if (data.intent === 'Graph Complete' && data.simple_draft) {
             const card = document.getElementById('finalDraftCard');
             const body = document.getElementById('finalDraftBody');
-            body.innerHTML = parseDraftMarkdown(data.simple_draft);
-            card.classList.add('visible');
-            // Smoothly scroll the draft card into view
-            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (body) body.innerHTML = parseDraftMarkdown(data.simple_draft);
+            if (card) {
+                card.classList.add('visible');
+                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
         }
     } else if (eventType === 'action_start') {
         addStreamCard('action', `Executing · Step ${data.step_id}`, `${data.action} → ${data.target}`, '', undefined);
-
-        // Add to friendly activity feed
         const friendlyMsg = getFriendlyActivityMessage(data.action, data.target, false);
         addMonitorEntry('success', 'Timeline', friendlyMsg);
 
-        // Update location and step count in the Mission Bar
         if (data.target) {
-            // Update address bar mockup on navigate actions
             if (data.action === 'navigate') {
-                const dbUrl = document.getElementById('dbUrl').value || 'https://shsri.odoo.com';
+                const dbUrlEl = document.getElementById('dbUrl');
+                const dbUrl = dbUrlEl ? (dbUrlEl.value || 'https://shsri.odoo.com') : 'https://shsri.odoo.com';
                 const path = data.target.startsWith('/') ? data.target : '/' + data.target;
-                document.getElementById('browser-address-bar').textContent = dbUrl + path;
+                safeSet('browser-address-bar', 'textContent', dbUrl + path);
             }
         }
         if (data.step_id) {
             const total = document.querySelectorAll('#planSteps .plan-step').length;
-            document.getElementById('mission-step').textContent = `Step ${data.step_id} of ${total || '—'}`;
+            safeSet('mission-step', 'textContent', `Step ${data.step_id} of ${total || '—'}`);
         }
-        document.getElementById('mission-status').textContent = 'Running';
-        document.getElementById('mission-status').style.color = 'var(--amber)';
+        if (!activeRun || !activeRun.terminal) {
+            safeSet('mission-status', 'textContent', 'Running');
+            safeStyle('mission-status', 'color', 'var(--amber)');
+        }
     } else if (eventType === 'action_result') {
         addStreamCard(
             data.success ? 'success' : 'error',
@@ -1362,35 +1496,34 @@ function handlePipelineEvent(eventType, data) {
             data.extracted_text ? `Extracted: "${data.extracted_text}"` : '',
             undefined
         );
-
-        // Add to friendly activity feed
         addMonitorEntry(data.success ? 'success' : 'error', 'Outcome', data.message);
 
         if (data.screenshot_path) {
             updateScreenshot(data.screenshot_path, data.step_id);
         }
         
-        document.getElementById('mission-status').textContent = 'Running';
-        document.getElementById('mission-status').style.color = 'var(--amber)';
+        if (!activeRun || !activeRun.terminal) {
+            safeSet('mission-status', 'textContent', 'Running');
+            safeStyle('mission-status', 'color', 'var(--amber)');
+        }
     } else if (eventType === 'error') {
         addStreamCard('error', 'SYSTEM ERROR', data.message, '', undefined);
         addMonitorEntry('error', 'Alert', `System Error: ${data.message}`);
         
-        document.getElementById('mission-status').textContent = 'Failed';
-        document.getElementById('mission-status').style.color = 'var(--red)';
+        safeSet('mission-status', 'textContent', 'Failed');
+        safeStyle('mission-status', 'color', 'var(--red)');
     } else if (eventType === 'final_summary') {
-        // Also populate the draft card from the final_summary if it has simple_draft
         if (data.simple_draft) {
             const card = document.getElementById('finalDraftCard');
             const body = document.getElementById('finalDraftBody');
-            body.innerHTML = parseDraftMarkdown(data.simple_draft);
-            card.classList.add('visible');
+            if (body) body.innerHTML = parseDraftMarkdown(data.simple_draft);
+            if (card) card.classList.add('visible');
         }
         renderDraftReport(data);
         addMonitorEntry('success', 'Timeline', 'Generated Final Investigation Report');
         
-        document.getElementById('mission-status').textContent = 'Completed';
-        document.getElementById('mission-status').style.color = 'var(--green)';
+        safeSet('mission-status', 'textContent', 'Completed');
+        safeStyle('mission-status', 'color', 'var(--green)');
     } else if (eventType === 'demo_thought') {
         addDemoThought(data.message);
     } else if (eventType === 'execution_plan') {
@@ -1401,6 +1534,11 @@ function handlePipelineEvent(eventType, data) {
         if (data.screenshot_path) {
             updateScreenshot(data.screenshot_path, data.step_id);
         }
+    } else if (eventType === 'browser_state') {
+        updateBrowserCaptureState(data.state, data.message);
+    } else if (eventType === 'heartbeat') {
+        if (activeRun) activeRun.lastByteAt = Date.now();
+        addMonitorEntry('success', 'Heartbeat', `Heartbeat ping: ${data.stage || 'idle'}`);
     }
 }
 
@@ -1417,15 +1555,13 @@ function renderDraftReport(data) {
     const errors   = ms.errors ? (Array.isArray(ms.errors) ? ms.errors : []) : [];
 
     // Update badge
-    document.getElementById('reportBadge').textContent = ok ? '✓ Complete' : '⚠ Partial';
-    document.getElementById('reportBadge').style.background = ok
-        ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.12)';
-    document.getElementById('reportBadge').style.color = ok ? '#10b981' : '#f59e0b';
-    document.getElementById('reportBadge').style.borderColor = ok
-        ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.25)';
+    safeSet('reportBadge', 'textContent', ok ? '✓ Complete' : '⚠ Partial');
+    safeStyle('reportBadge', 'background', ok ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.12)');
+    safeStyle('reportBadge', 'color', ok ? '#10b981' : '#f59e0b');
+    safeStyle('reportBadge', 'borderColor', ok ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.25)');
 
     // Show export actions
-    document.getElementById('reportActions').style.display = 'flex';
+    safeStyle('reportActions', 'display', 'flex');
 
     // Build findings HTML
     const findingsHtml = findings.length > 0
@@ -1461,7 +1597,7 @@ function renderDraftReport(data) {
         </div>` : '';
 
     // Assemble full report
-    document.getElementById('reportContent').innerHTML = `
+    const reportHtml = `
         <div class="report-hero">
             <div class="report-hero-badge">🔍 Investigation Report · ${escHtml(data.module || 'Unknown Module')}</div>
             <h2>${escHtml(data.ticket_summary || 'Ticket investigation complete')}</h2>
@@ -1505,12 +1641,13 @@ function renderDraftReport(data) {
             <span>Executed: <strong>${data.was_executed ? 'Yes' : 'No'}</strong></span>
         </div>
     `;
+    safeSet('reportContent', 'innerHTML', reportHtml);
 
-    document.getElementById('reportContent').classList.add('visible');
-    document.querySelector('.report-placeholder').style.display = 'none';
+    safeClassAdd('reportContent', 'visible');
+    safeQueryStyle('.report-placeholder', 'display', 'none');
 
     // Scroll report to top
-    document.getElementById('reportBody').scrollTop = 0;
+    safeSet('reportBody', 'scrollTop', 0);
 }
 
 // ── Copy / Export ──────────────────────────────────────────────────────────────
@@ -1591,35 +1728,56 @@ function exportReport() {
 // ── Main pipeline runner ───────────────────────────────────────────────────────
 async function runPipeline() {
     const btn = document.getElementById('runBtn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Running…';
+    
+    // 1. Abort any prior run
+    if (activeRun) {
+        cleanupRun(activeRun);
+    }
+    
+    // 2. Initialize new activeRun
+    const abortController = new AbortController();
+    activeRun = {
+        runId: null,
+        reader: null,
+        abortController: abortController,
+        watchdogId: null,
+        lastByteAt: Date.now(),
+        terminal: false
+    };
+
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Running…';
+    }
     resetMonitor();
 
     // Reset report panel
     _lastReportData = null;
-    document.getElementById('reportContent').classList.remove('visible');
-    document.getElementById('reportContent').innerHTML = '';
-    document.querySelector('.report-placeholder').style.display = '';
-    document.getElementById('reportActions').style.display = 'none';
-    document.getElementById('reportBadge').textContent = 'Running…';
-    document.getElementById('reportBadge').style.cssText = '';
+    safeClassRemove('reportContent', 'visible');
+    safeSet('reportContent', 'innerHTML', '');
+    safeQueryStyle('.report-placeholder', 'display', '');
+    safeStyle('reportActions', 'display', 'none');
+    safeSet('reportBadge', 'textContent', 'Running…');
+    safeStyle('reportBadge', 'cssText', '');
 
-    document.getElementById('stream-container').innerHTML = '';
+    safeSet('stream-container', 'innerHTML', '');
     resetDemoPanels();
 
     // Reset the final draft card
-    document.getElementById('finalDraftCard').classList.remove('visible');
-    document.getElementById('finalDraftBody').innerHTML = '';
+    safeClassRemove('finalDraftCard', 'visible');
+    safeSet('finalDraftBody', 'innerHTML', '');
 
     // Activate indicators
-    document.getElementById('liveDot').classList.add('active');
-    document.getElementById('headerDot').classList.remove('done');
-    document.getElementById('headerDot').classList.add('active');
-    document.getElementById('statusLabel').textContent = 'Starting...';
+    safeClassAdd('liveDot', 'active');
+    safeClassRemove('headerDot', 'done');
+    safeClassAdd('headerDot', 'active');
+    safeSet('statusLabel', 'textContent', 'Starting...');
 
+    const ticketEl = document.getElementById('ticket');
+    const dbUrlEl = document.getElementById('dbUrl');
     const payload = {
-        ticket_text: document.getElementById('ticket').value,
-        db_url:      document.getElementById('dbUrl').value,
+        ticket_text: ticketEl ? ticketEl.value : '',
+        db_url:      dbUrlEl ? dbUrlEl.value : '',
     };
 
     try {
@@ -1627,42 +1785,81 @@ async function runPipeline() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
+            signal: activeRun.abortController.signal
         });
         if (!runResponse.ok) {
             const errData = await runResponse.json();
             throw new Error(errData.error || `HTTP ${runResponse.status}`);
         }
+        
+        if (activeRun.terminal) return;
+        
         const runData = await runResponse.json();
         const runId = runData.run_id;
+        activeRun.runId = runId;
 
         // Connect to SSE stream endpoint
-        const response = await fetch(`/api/runs/${runId}/stream`);
-        const reader  = response.body.getReader();
+        const response = await fetch(`/api/runs/${runId}/stream`, {
+            signal: activeRun.abortController.signal
+        });
+        
+        if (activeRun.terminal) return;
+        
+        const reader = response.body.getReader();
+        activeRun.reader = reader;
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
 
-        let lastEventTime = Date.now();
+        activeRun.lastByteAt = Date.now();
+        const localActiveRun = activeRun; // capture for closure
+        
         const watchdogInterval = setInterval(() => {
-            if (Date.now() - lastEventTime > 60000) {
-                showToast('⚠ Pipeline connection may be stalled...');
+            if (localActiveRun.terminal) {
+                clearInterval(watchdogInterval);
+                return;
             }
-        }, 10000);
+            if (Date.now() - localActiveRun.lastByteAt > 90000) {
+                clearInterval(watchdogInterval);
+                localActiveRun.terminal = true;
+                cleanupRun(localActiveRun);
+                
+                addStreamCard('error', 'Connection Stalled', 'No bytes received from server for 90 seconds. Stream transport is dead.', '', undefined);
+                addMonitorEntry('error', 'network', 'Connection Stall (90s silence)');
+                incMonitor('errors');
+                
+                safeSet('statusLabel', 'textContent', 'FAILED');
+                safeSet('mission-status', 'textContent', 'Failed');
+                safeStyle('mission-status', 'color', 'var(--red)');
+                
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '⚡ Execute Pipeline';
+                }
+                safeClassRemove('liveDot', 'active');
+                safeClassRemove('headerDot', 'active');
+                safeClassAdd('headerDot', 'done');
+            }
+        }, 5000);
+        
+        activeRun.watchdogId = watchdogInterval;
 
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (activeRun.terminal) break;
 
-                lastEventTime = Date.now();
+                activeRun.lastByteAt = Date.now();
 
                 buffer += decoder.decode(value, { stream: true });
                 const chunks = buffer.split('\n\n');
                 buffer = chunks.pop();
 
                 for (const chunk of chunks) {
+                    if (activeRun.terminal) break;
                     if (!chunk.trim()) continue;
                     
-                    lastEventTime = Date.now();
+                    activeRun.lastByteAt = Date.now();
 
                     const dataMatch  = chunk.match(/^data: (.+)$/m);
                     const eventMatch = chunk.match(/^event: (.+)$/m);
@@ -1682,15 +1879,25 @@ async function runPipeline() {
 
                     if (eventType === 'state_change') {
                         const ns = parsed.new_state || '';
-                        document.getElementById('statusLabel').textContent = ns;
-                        addMonitorEntry('info', 'state', `Status: ${ns}`);
+                        safeSet('statusLabel', 'textContent', ns);
+                        addMonitorEntry('event', 'state', `Status: ${ns}`);
                         // Mirror terminal states to Mission Bar immediately
                         if (ns === 'FAILED' || ns === 'failed') {
-                            document.getElementById('mission-status').textContent = 'Failed';
-                            document.getElementById('mission-status').style.color = 'var(--red)';
+                            safeSet('mission-status', 'textContent', 'Failed');
+                            safeStyle('mission-status', 'color', 'var(--red)');
+                            activeRun.terminal = true;
                         } else if (ns === 'COMPLETED' || ns === 'completed') {
-                            document.getElementById('mission-status').textContent = 'Completed';
-                            document.getElementById('mission-status').style.color = 'var(--green)';
+                            safeSet('mission-status', 'textContent', 'Completed');
+                            safeStyle('mission-status', 'color', 'var(--green)');
+                            activeRun.terminal = true;
+                        } else if (ns === 'TIMED_OUT' || ns === 'timed_out') {
+                            safeSet('mission-status', 'textContent', 'Timed Out');
+                            safeStyle('mission-status', 'color', 'var(--red)');
+                            activeRun.terminal = true;
+                        } else if (ns === 'CANCELLED' || ns === 'cancelled') {
+                            safeSet('mission-status', 'textContent', 'Cancelled');
+                            safeStyle('mission-status', 'color', 'var(--muted)');
+                            activeRun.terminal = true;
                         }
                         continue;
                     }
@@ -1704,23 +1911,30 @@ async function runPipeline() {
                 }
             }
         } finally {
-            clearInterval(watchdogInterval);
+            if (activeRun === localActiveRun) {
+                cleanupRun(activeRun);
+            }
         }
     } catch (err) {
+        if (activeRun && activeRun.terminal && err.name === 'AbortError') {
+            return;
+        }
         addStreamCard('error', 'Network Error', String(err), '', undefined);
         addMonitorEntry('error', 'network', String(err));
         incMonitor('errors');
     } finally {
-        btn.disabled = false;
-        btn.textContent = '⚡ Execute Pipeline';
-        document.getElementById('liveDot').classList.remove('active');
-        document.getElementById('headerDot').classList.remove('active');
-        document.getElementById('headerDot').classList.add('done');
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '⚡ Execute Pipeline';
+        }
+        safeClassRemove('liveDot', 'active');
+        safeClassRemove('headerDot', 'active');
+        safeClassAdd('headerDot', 'done');
         
-        // Avoid overwriting terminal state labels
-        const currentLabel = document.getElementById('statusLabel').textContent;
-        if (currentLabel !== 'FAILED' && currentLabel !== 'COMPLETED') {
-            document.getElementById('statusLabel').textContent = 'Done';
+        const statusLabelEl = document.getElementById('statusLabel');
+        const currentLabel = statusLabelEl ? statusLabelEl.textContent : '';
+        if (currentLabel !== 'FAILED' && currentLabel !== 'COMPLETED' && currentLabel !== 'TIMED_OUT' && currentLabel !== 'CANCELLED') {
+            safeSet('statusLabel', 'textContent', 'Done');
         }
     }
 }
@@ -1728,6 +1942,7 @@ async function runPipeline() {
 // ── Runs History ───────────────────────────────────────────────────────────────
 async function loadRuns() {
     const list = document.getElementById('runs-list');
+    if (!list) return;
     list.innerHTML = '<div class="empty-state">Loading...</div>';
     try {
         const res  = await fetch('/api/runs');
@@ -1768,6 +1983,7 @@ async function loadRuns() {
 
 async function loadRunDetail(runId) {
     const panel = document.getElementById('run-detail');
+    if (!panel) return;
     panel.innerHTML = '<div class="run-detail-panel"><h3>Loading...</h3></div>';
     try {
         const res  = await fetch(`/api/runs/${runId}`);

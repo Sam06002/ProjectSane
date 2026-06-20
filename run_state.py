@@ -13,3 +13,4 @@ class RunState(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    TIMED_OUT = "TIMED_OUT"

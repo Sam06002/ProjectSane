@@ -28,6 +28,7 @@ app.mount("/output", StaticFiles(directory="output"), name="output")
 async def startup_event():
     os.makedirs("output", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
+    JobManager.start_watchdog()
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ async def list_runs():
     active_jobs = [
         serialize_active_job(j) 
         for j in JobManager.get_all_jobs() 
-        if j.state not in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED)
+        if j.state not in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT)
     ]
     index_runs = get_run_history(limit=20)
     
@@ -172,7 +173,7 @@ async def stream_run(run_id: str):
                 yield f"event: error\ndata: {{\"message\": \"Stream timed out after {HARD_TIMEOUT_S}s\"}}\n\n"
                 break
             # Terminal state: drain remaining queue then stop
-            if job.state in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED) and job.queue.empty():
+            if job.state in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT) and job.queue.empty():
                 break
             try:
                 msg = await asyncio.wait_for(job.queue.get(), timeout=1.0)

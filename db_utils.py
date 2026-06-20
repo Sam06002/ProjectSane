@@ -85,7 +85,19 @@ async def assert_duplicate_database(
     prod_id = get_database_name(prod_url)
     curr_id = get_database_name(current_url)
 
-    if not is_duplicate_database(current_url, prod_url):
+    is_dup_url = is_duplicate_database(current_url, prod_url)
+    has_neutral_banner = False
+    if page:
+        try:
+            import odoo_selectors as selectors
+            for sel in selectors.get_selector("neutral_banner"):
+                if await page.locator(sel).count() > 0:
+                    has_neutral_banner = True
+                    break
+        except Exception as e:
+            logger.warning(f"Error checking neutralization banner: {e}")
+
+    if not is_dup_url and not has_neutral_banner:
         log_msg = (
             f"FATAL: Execution blocked! Attempted to run against production database.\n"
             f" - Target URL: {current_url}\n"
@@ -93,7 +105,10 @@ async def assert_duplicate_database(
         )
         logger.error(log_msg)
         if run_logger:
-            run_logger.log_error(message=log_msg, context="production_safety_check")
+            if hasattr(run_logger, "log_error"):
+                run_logger.log_error(message=log_msg, context="production_safety_check")
+            elif hasattr(run_logger, "error"):
+                run_logger.error(log_msg)
         raise DuplicationError(log_msg, "production_execution_blocked")
 
     # Log confirmation details

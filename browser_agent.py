@@ -379,6 +379,36 @@ class BrowserRunContext:
             pass
 
 
+async def _safe_page_url(page) -> Optional[str]:
+    """Safely retrieves page url, returning None if page is closed/stale."""
+    try:
+        return page.url
+    except Exception:
+        return None
+
+async def _safe_page_title(page) -> Optional[str]:
+    """Safely retrieves page title, returning None if page is closed/stale."""
+    try:
+        return await page.title()
+    except Exception:
+        return None
+
+async def _safe_locator_count(locator) -> int:
+    """Safely retrieves locator count, returning 0 if locator is stale/invalid."""
+    try:
+        return await locator.count()
+    except Exception:
+        return 0
+
+async def _safe_close_page(page) -> bool:
+    """Safely closes page, returning True if successful, False otherwise."""
+    try:
+        await page.close()
+        return True
+    except Exception:
+        return False
+
+
 class BrowserManager:
     """Manages the single central Chrome process and yields isolated contexts per run."""
     def __init__(self):
@@ -547,20 +577,18 @@ class BrowserManager:
             except Exception as pe:
                 print(f"[Browser] Could not snapshot pages (stale context): {pe}")
             for p in pages_snapshot:
+                url = await _safe_page_url(p)
+                if url is None:
+                    continue
                 try:
-                    url = p.url
                     page_count = len(default_context.pages)
                 except Exception:
-                    # Page handle is stale — skip it silently
-                    continue
+                    page_count = 1
                 if page_count <= 1:
                     break
                 if "/_odoo/support" in url or is_duplicate_database(url) or "sane1-support" in url or "-support-" in url:
                     print(f"[Browser] Closing leftover page from previous run: {url}")
-                    try:
-                        await asyncio.wait_for(p.close(), timeout=3.0)
-                    except Exception as ce:
-                        print(f"[Browser] Failed to close page cleanly (ignoring): {ce}")
+                    await _safe_close_page(p)
         except Exception as e:
             # Never let cleanup kill the pipeline
             print(f"[Browser] Non-fatal error cleaning up leftover pages: {e}")
