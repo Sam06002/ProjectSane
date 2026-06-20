@@ -136,6 +136,7 @@ class JobManager:
         from urllib.parse import urlparse
 
         run_log = RunLogger()
+        run_log._run_id = job.run_id
         run_log.run_id = job.run_id
         run_log.data["run_id"] = job.run_id
 
